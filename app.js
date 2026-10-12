@@ -17,7 +17,7 @@ import {
     signOut, sendPasswordResetEmail, updatePassword,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import { ico, hydrateIcons } from './icons.js';
-import { mountChart, exportChartPng, downloadBlob, PALETTE } from './charts.js';
+import { mountChart, mountHeatmap, exportChartPng, downloadBlob, PALETTE } from './charts.js';
 
 // ==========================================================================
 // 1. CONFIGURACIÓN
@@ -43,8 +43,8 @@ const CONFIG = {
 
 const ROLES = { ADMIN: 'ADMIN', REPRESENTANTE: 'REPRESENTANTE' };
 const ROLE_LABEL = { ADMIN: 'Administrador', REPRESENTANTE: 'Representante' };
-const LINEAS = ['Postura', 'Engorde'];
-const LINEA_ICON = { Postura: 'egg', Engorde: 'bird' };
+const LINEAS = ['Reproductora', 'Incubadora', 'Engorde', 'Postura'];
+const LINEA_ICON = { Reproductora: 'bird', Incubadora: 'archive', Engorde: 'drumstick', Postura: 'egg' };
 const SECCION_ICON = {
     'Información de origen': 'globe',
     'Información de incubadora': 'egg',
@@ -54,9 +54,15 @@ const SECCION_ICON = {
 const LISTA_LABEL = {
     Pais: 'Países', Raza: 'Razas', SistemaAlojamiento: 'Sistemas de alojamiento',
     EmpresaIncubadora: 'Empresas incubadoras', Vacuna: 'Vacunas',
+    GeneticaPostura: 'Líneas genéticas · postura', GeneticaEngorde: 'Líneas genéticas · engorde',
 };
 const PRESETS = [[30, '30 días'], [90, '90 días'], [180, '6 meses'], [365, '1 año'], [0, 'Todo']];
 const AGRUPAR = [['dia', 'Día'], ['semana', 'Semana'], ['mes', 'Mes']];
+/** Pesos: el servidor guarda gramos; aquí solo se convierte para escribir y mostrar. */
+const UNIDADES = { g: 1, kg: 1000, lb: 453.59237 };
+const UNIDAD_NOMBRE = { g: 'gramos', kg: 'kilogramos', lb: 'libras' };
+/** Colores del índice de estrés calórico (nivel → color). */
+const IEC_COLOR = { verde: '#3FBF7F', amarillo: '#F2C94C', naranja: '#F2994A', rojo: '#E5484D' };
 
 window.__granjasIniciada = true;   // avisa a boot-check.js que la app sí arrancó
 hydrateIcons();
@@ -68,8 +74,9 @@ const auth = initializeAuth(initializeApp(CONFIG.firebase), { persistence: brows
 // ==========================================================================
 
 const emptyDb = () => ({
-    granjas: [], perfiles: [], users: [], listas: [],
-    campos: { perfil: [], Postura: [], Engorde: [] }, tiposLista: [],
+    granjas: [], perfiles: [], users: [], listas: [], sectores: [], naves: [], lotes: [],
+    campos: { perfil: [], Reproductora: [], Incubadora: [], Engorde: [], Postura: [] }, tiposLista: [],
+    geneticaDe: {}, iecRangos: [], diasRetroactivos: 7, maxMuestra: 1000,
 });
 
 const state = {
@@ -79,19 +86,32 @@ const state = {
     busy: 0,
     granjaId: null,          // representante: granja activa (cada granja se trabaja por separado)
     linea: 'Postura',
-    f: { desde: daysAgo(CONFIG.RANGO_INICIAL_DIAS), hasta: today(), granjas: [], agrupar: 'semana', eliminados: false },
-    cache: new Map(),        // respuestas de lectura (registros, bitácora…) por solicitud
+    f: { desde: daysAgo(CONFIG.RANGO_INICIAL_DIAS), hasta: today(), granjas: [], agrupar: 'semana', eliminados: false, sector: '', nave: '' },
+    unidad: leerPref('granjas.unidad', 'kg'),   // unidad para ver pesos (g, kg, lb)
+    cache: new Map(),        // respuestas de lectura (registros, pesajes, bitácora…) por solicitud
     loading: new Set(),
     sort: {},
     q: {},
     audit: null,
     ddOpen: false,
     registros: new Map(),    // RegistroID → registro visible (para las acciones de la tabla)
+    pesajes: new Map(),      // PesajeID → pesaje visible
+    lecturas: new Map(),     // LecturaID → lectura visible
+    bitGranja: '',
 };
 
 const tables = {};
 const charts = {};
 let chartUnmounts = [];
+/** Captura de pesos en curso (modal de pesaje). */
+let pz = null;
+
+function leerPref(k, def) {
+    try { return localStorage.getItem(k) || def; } catch { return def; }
+}
+function guardarPref(k, v) {
+    try { localStorage.setItem(k, v); } catch { /* sin almacenamiento */ }
+}
 
 // ==========================================================================
 // 3. UTILIDADES
@@ -157,7 +177,7 @@ const MSG = {
     NETWORK: 'No hay conexión. Revisa tu internet e intenta de nuevo.',
     BAD_RESPONSE: 'No pudimos confirmar si la operación se completó. Revisa la información actualizada antes de intentarlo de nuevo.',
 };
-const READ_ACTIONS = new Set(['getSnapshot', 'getRegistros', 'getResumen', 'getBitacora', 'getAccesos', 'verifyAudit']);
+const READ_ACTIONS = new Set(['getSnapshot', 'getRegistros', 'getResumen', 'getPesajes', 'getAmbiente', 'getBitacora', 'getAccesos', 'verifyAudit']);
 const ACCESS_CODES = new Set(['NOT_REGISTERED', 'SUSPENDED', 'ACCOUNT_LOCKED']);
 
 async function api(action, payload = {}, { forceRefresh = false, retried = false } = {}) {
@@ -269,12 +289,13 @@ function ctxIds() {
     if (!isAdmin()) return state.granjaId ? [state.granjaId] : [];
     return state.f.granjas.length ? [...state.f.granjas] : state.db.granjas.map(g => g.GranjaID);
 }
+/** Una línea solo se muestra si alguna granja del contexto tiene su ficha activa. */
 function lineasDisponibles(ids) {
     return LINEAS.filter(l => ids.some(id => perfilDe(id, l)?.Estado === 'Activo'));
 }
 function ensureLinea(ids) {
     const d = lineasDisponibles(ids);
-    if (d.length && !d.includes(state.linea)) state.linea = d[0];
+    if (d.length && !d.includes(state.linea)) { state.linea = d[0]; state.f.sector = ''; state.f.nave = ''; }
     return d;
 }
 /** Granjas que se piden al servidor (el servidor vuelve a validar el acceso). */
@@ -282,18 +303,61 @@ function apiGranjas() {
     if (!isAdmin()) return state.granjaId ? [state.granjaId] : [];
     return state.f.granjas.length ? [...state.f.granjas] : undefined;
 }
+
+// ---------- Estructura: sectores → naves → lotes ----------
+function byNombre(a, b) { return String(a.Nombre).localeCompare(String(b.Nombre), 'es', { numeric: true }); }
+const sectorById = id => state.db.sectores.find(s => s.SectorID === id);
+const naveById = id => state.db.naves.find(n => n.NaveID === id);
+const loteById = id => state.db.lotes.find(l => l.LoteID === id);
+const sectoresDe = (granjaId, linea) => state.db.sectores.filter(s => s.GranjaID === granjaId && s.Linea === linea).sort(byNombre);
+const navesDe = sectorId => state.db.naves.filter(n => n.SectorID === sectorId).sort(byNombre);
+const lotesDe = naveId => state.db.lotes.filter(l => l.NaveID === naveId).sort((a, b) => (a.FechaInicio < b.FechaInicio ? 1 : -1));
+const loteActivo = naveId => state.db.lotes.find(l => l.NaveID === naveId && l.Estado === 'Activo') || null;
+/** Lote que ocupaba la nave en una fecha (igual que el servidor). */
+function loteEn(naveId, fecha) {
+    return lotesDe(naveId).find(l => l.FechaInicio <= fecha && (!l.FechaCierre || l.FechaCierre >= fecha)) || null;
+}
+/** Naves que admiten datos nuevos: nave y sector activos. */
+function navesActivas(granjaId, linea) {
+    return sectoresDe(granjaId, linea).filter(s => s.Estado === 'Activo')
+        .flatMap(s => navesDe(s.SectorID).filter(n => n.Estado === 'Activo').map(n => ({ s, n })));
+}
+/** Filtro de sector/nave: solo cuando el contexto es UNA granja. */
+function filtroUbicacion() {
+    const ids = ctxIds();
+    if (ids.length !== 1) return {};
+    const s = state.f.sector && sectorById(state.f.sector);
+    const n = state.f.nave && naveById(state.f.nave);
+    return {
+        SectorID: s && s.GranjaID === ids[0] && s.Linea === state.linea ? s.SectorID : undefined,
+        NaveID: n && n.GranjaID === ids[0] && n.Linea === state.linea ? n.NaveID : undefined,
+    };
+}
 function registrosPayload(extra = {}) {
     return {
-        Linea: state.linea, GranjaIDs: apiGranjas(),
+        Linea: state.linea, GranjaIDs: apiGranjas(), ...filtroUbicacion(),
         desde: state.f.desde || undefined, hasta: state.f.hasta || undefined, ...extra,
     };
 }
+function fechaMinima() { return isAdmin() ? '' : daysAgo(state.db.diasRetroactivos || 7); }
+
+// ---------- Campos ----------
 const camposDe = linea => state.db.campos[linea] || [];
 const camposNumericos = linea => camposDe(linea).filter(c => c.agg);
-function camposComunes() {
-    const eng = new Set(camposDe('Engorde').map(c => c.k));
-    return camposDe('Postura').filter(c => eng.has(c.k) && c.k !== 'Comentarios');
+const camposEntrada = linea => camposDe(linea).filter(c => !c.calc);
+const campoDe = (linea, k) => camposDe(linea).find(c => c.k === k);
+
+// ---------- Pesos (gramos ⇄ unidad elegida) ----------
+const factorDe = u => UNIDADES[u] || 1;
+function enUnidad(g, u = state.unidad) { const n = toNum(g); return n === null ? null : n / factorDe(u); }
+function decimalesPeso(u = state.unidad) { return u === 'g' ? 1 : 3; }
+function fmtPeso(g, u = state.unidad) {
+    const v = enUnidad(g, u);
+    return v === null ? '—' : `${new Intl.NumberFormat('es-GT', { maximumFractionDigits: decimalesPeso(u) }).format(v)} ${u}`;
 }
+function etiquetaCampo(c) { return c.peso ? `${c.l} (${state.unidad})` : c.l; }
+/** Valor de un campo para mostrar o graficar (los pesos, en la unidad elegida). */
+function valorCampo(c, v) { return c.peso ? enUnidad(v) : v; }
 
 /** Clave de periodo: día AAAA-MM-DD · semana ISO AAAA-Sss · mes AAAA-MM (igual que el servidor). */
 function periodo(fecha, agrupar) {
@@ -334,26 +398,56 @@ function aggregate(regs, campos, keyFn) {
 const gAvg = (g, k) => (g?.c[k] ? g.s[k] / g.c[k] : null);
 const gSum = (g, k) => (g?.c[k] ? g.s[k] : null);
 const gVal = (g, c) => (c.agg === 'suma' ? gSum(g, c.k) : gAvg(g, c.k));
+/** Valor agregado listo para mostrar (pesos convertidos, 2–3 decimales). */
+function gShow(g, c) {
+    const v = gVal(g, c);
+    if (v === null) return null;
+    return c.peso ? round(enUnidad(v), decimalesPeso()) : round(v);
+}
+function round(v, d = 2) { return v === null || v === undefined ? null : Math.round(v * 10 ** d) / 10 ** d; }
 
-/** Gráficos por línea: [campo, nombre de la serie, color, punteada]. */
+/** Gráficos por línea: [campo, nombre de la serie, color, punteada]. Los pesos usan la unidad elegida. */
+const CHARTS_ZOO = [
+    { id: 'peso', title: 'Peso corporal', icon: 'scale', type: 'line', peso: true, series: [['PesoCorporalReal', 'Peso real (pesaje)', 'primary'], ['PesoCorporalTabla', 'Tabla', 'secondary', true]] },
+    { id: 'conversion', title: 'Conversión alimenticia', icon: 'wheat', type: 'line', series: [['ConversionAlimenticia', 'Conversión (kg alimento / kg ganado)', 'primary']] },
+    { id: 'mortalidad', title: 'Mortalidad (%)', icon: 'activity', unit: '%', type: 'line', series: [['MortalidadPorcentaje', 'Mortalidad real', 'primary'], ['MortalidadIdeal', 'Ideal', 'tertiary', true]] },
+    { id: 'consumo', title: 'Consumo de alimento (g/ave/día)', icon: 'wheat', unit: 'g', type: 'line', series: [['ConsumoGramosAveDia', 'Consumo real', 'primary'], ['ConsumoTabla', 'Tabla', 'secondary', true]] },
+    { id: 'iec', title: 'Índice de estrés calórico (máx. del día)', icon: 'thermometer', type: 'line', series: [['IndiceEstresCalorico', 'IEC (°C + % HR)', 'amber']] },
+    { id: 'muertes', title: 'Mortalidad (aves)', icon: 'bird', type: 'bar', series: [['MortalidadNominal', 'Mortalidad (aves)', 'amber']] },
+];
 const CHARTS = {
+    Reproductora: CHARTS_ZOO,
+    Engorde: CHARTS_ZOO,
     Postura: [
-        { id: 'postura', title: 'Postura (%)', icon: 'egg', unit: '%', type: 'line', series: [['PosturaPorcentaje', 'Postura real', 'primary'], ['PosturaTabla', 'Tabla', 'secondary', true]] },
-        { id: 'mortalidad', title: 'Mortalidad (%)', icon: 'activity', unit: '%', type: 'line', series: [['MortalidadPorcentaje', 'Mortalidad real', 'primary'], ['MortalidadIdeal', 'Ideal', 'tertiary', true]] },
-        { id: 'consumo', title: 'Consumo de alimento (g/ave/día)', icon: 'wheat', unit: 'g', type: 'line', series: [['ConsumoGramosAveDia', 'Consumo real', 'primary'], ['ConsumoTabla', 'Tabla', 'secondary', true]] },
-        { id: 'huevo', title: 'Clasificación de huevo', icon: 'chart-column', type: 'bar', series: [['HuevoPiwi', 'Piwi', 'slate'], ['HuevoMediano', 'Mediano', 'secondary'], ['HuevoGrande', 'Grande', 'primary'], ['HuevoExtragrande', 'Extragrande', 'tertiary']], stack: true },
-        { id: 'densidad', title: 'Densidad', icon: 'warehouse', type: 'line', series: [['DensidadReal', 'Densidad real', 'primary'], ['DensidadIdeal', 'Ideal', 'tertiary', true]] },
-        { id: 'aves', title: 'Mortalidad (aves)', icon: 'bird', type: 'bar', series: [['MortalidadNominal', 'Mortalidad (aves)', 'amber']] },
-    ],
-    Engorde: [
-        { id: 'peso', title: 'Peso corporal', icon: 'scale', type: 'line', series: [['PesoCorporalReal', 'Peso real', 'primary'], ['PesoCorporalTabla', 'Tabla', 'secondary', true]] },
-        { id: 'mortalidad', title: 'Mortalidad (%)', icon: 'activity', unit: '%', type: 'line', series: [['MortalidadPorcentaje', 'Mortalidad real', 'primary'], ['MortalidadIdeal', 'Ideal', 'tertiary', true]] },
-        { id: 'consumo', title: 'Consumo de alimento (g/ave/día)', icon: 'wheat', unit: 'g', type: 'line', series: [['ConsumoGramosAveDia', 'Consumo real', 'primary'], ['ConsumoTabla', 'Tabla', 'secondary', true]] },
-        { id: 'pesoideal', title: 'Peso corporal ideal (%)', icon: 'trending-up', unit: '%', type: 'line', series: [['PesoCorporalIdealPorcentaje', 'Peso ideal (%)', 'tertiary']] },
-        { id: 'aves', title: 'Mortalidad (aves)', icon: 'bird', type: 'bar', series: [['MortalidadNominal', 'Mortalidad (aves)', 'amber']] },
-        { id: 'consumototal', title: 'Consumo total (quintales)', icon: 'wheat', type: 'bar', series: [['ConsumoQuintalesTotal', 'Quintales', 'secondary']] },
+        { id: 'postura', title: 'Postura / huevo (%)', icon: 'egg', unit: '%', type: 'line', series: [['PosturaPorcentaje', 'Postura real', 'primary'], ['PosturaTabla', 'Tabla', 'secondary', true]] },
+        { id: 'huevo', title: 'Clasificación de huevo', icon: 'chart-column', type: 'bar', stack: true, series: [['HuevoPiwi', 'Piwi', 'slate'], ['HuevoMediano', 'Mediano', 'secondary'], ['HuevoGrande', 'Grande', 'primary'], ['HuevoExtragrande', 'Extragrande', 'tertiary']] },
+    ].concat(CHARTS_ZOO),
+    Incubadora: [
+        { id: 'nacimiento', title: '% de nacimiento', icon: 'egg', unit: '%', type: 'line', series: [['PorcentajeNacimiento', 'Nacimiento ÷ huevo incubable', 'primary']] },
+        { id: 'huevos', title: 'Huevos y nacimientos', icon: 'chart-column', type: 'bar', series: [['HuevoIncubable', 'Huevo incubable', 'primary'], ['HuevoTransferencia', 'Huevo de transferencia', 'secondary'], ['Nacimiento', 'Nacimiento', 'tertiary']] },
+        { id: 'pesohuevo', title: 'Peso de huevo', icon: 'scale', type: 'line', peso: true, series: [['PesoHuevo', 'Peso promedio (pesaje)', 'primary']] },
+        { id: 'mortalidad', title: 'Mortalidad (%)', icon: 'activity', unit: '%', type: 'line', series: [['MortalidadPorcentaje', 'Mortalidad', 'primary']] },
     ],
 };
+/** Indicador principal de cada línea para el comparativo (real y tabla). */
+const COMPARATIVO = {
+    Reproductora: ['PesoCorporalReal', 'PesoCorporalTabla', 'Peso corporal'],
+    Engorde: ['PesoCorporalReal', 'PesoCorporalTabla', 'Peso corporal'],
+    Postura: ['PosturaPorcentaje', 'PosturaTabla', 'Postura (%)'],
+    Incubadora: ['PorcentajeNacimiento', null, '% de nacimiento'],
+};
+
+/** Nivel del índice de estrés calórico (rangos del servidor). */
+function nivelIec(v) {
+    const n = toNum(v);
+    if (n === null) return null;
+    return state.db.iecRangos.find(r => r.hasta === null || n < r.hasta) || state.db.iecRangos[state.db.iecRangos.length - 1];
+}
+function badgeIec(v, nivel) {
+    const r = nivel ? state.db.iecRangos.find(x => x.nivel === nivel) : nivelIec(v);
+    if (!r) return '—';
+    return `<span class="badge badge-iec iec-${esc(r.color)}">${esc(r.nivel)}</span>`;
+}
 
 // ==========================================================================
 // 6. TABLAS (ordenar A-Z / Z-A, buscar, CSV) Y GRÁFICOS (PNG)
@@ -478,7 +572,10 @@ function chartCard(id, spec) {
 
 function mountCharts() {
     chartUnmounts.forEach(f => f());
-    chartUnmounts = $$('canvas[data-chart]').map(cv => mountChart(cv, charts[cv.dataset.chart]));
+    chartUnmounts = $$('canvas[data-chart]').map((cv) => {
+        const spec = charts[cv.dataset.chart];
+        return spec.type === 'heatmap' ? mountHeatmap(cv, spec) : mountChart(cv, spec);
+    });
 }
 
 // ==========================================================================
@@ -487,16 +584,19 @@ function mountCharts() {
 
 const NAV = {
     ADMIN: [['dashboard', 'Dashboard', 'layout-dashboard'], ['registros', 'Registros', 'clipboard-list'],
-        ['granjas', 'Granjas', 'warehouse'], ['usuarios', 'Usuarios', 'users'], ['listas', 'Listas', 'list'],
+        ['pesajes', 'Pesajes', 'scale'], ['ambiente', 'Estrés calórico', 'thermometer'], ['granjas', 'Granjas', 'warehouse'], ['usuarios', 'Usuarios', 'users'], ['listas', 'Listas', 'list'],
         ['bitacora', 'Bitácora', 'history'], ['seguridad', 'Seguridad', 'shield-check']],
     REPRESENTANTE: [['granja', 'Mi granja', 'warehouse'], ['dashboard', 'Dashboard', 'layout-dashboard'],
-        ['registros', 'Registros', 'clipboard-list'], ['bitacora', 'Bitácora', 'history']],
+        ['registros', 'Registros', 'clipboard-list'], ['pesajes', 'Pesajes', 'scale'], ['ambiente', 'Estrés calórico', 'thermometer'],
+        ['bitacora', 'Bitácora', 'history']],
 };
 const HOME = { ADMIN: 'dashboard', REPRESENTANTE: 'granja' };
 const A = [ROLES.ADMIN], ALL = [ROLES.ADMIN, ROLES.REPRESENTANTE];
 const VIEWS = {
     dashboard: { roles: ALL, title: 'Dashboard', render: viewDashboard },
-    registros: { roles: ALL, title: 'Registros de producción', render: viewRegistros },
+    registros: { roles: ALL, title: 'Registros diarios', render: viewRegistros },
+    pesajes: { roles: ALL, title: 'Pesajes por muestra', render: viewPesajes },
+    ambiente: { roles: ALL, title: 'Estrés calórico', render: viewAmbiente },
     granja: { roles: ALL, title: 'Granja', render: viewGranja },
     granjas: { roles: A, title: 'Granjas', render: viewGranjas },
     usuarios: { roles: A, title: 'Usuarios', render: viewUsuarios },
@@ -594,11 +694,31 @@ function granjaPicker() {
         </details></div>`;
 }
 
+/** Solo aparecen las líneas que la granja tiene (las demás no se muestran). */
 function lineaTabs(disp) {
-    return `<div class="filter-group"><span class="field-label">Línea</span><div class="segmented" role="group" aria-label="Línea de producción">${LINEAS.map((l) => {
-        const ok = disp.includes(l);
-        return `<button type="button" class="seg${l === state.linea && ok ? ' is-active' : ''}" data-action="set-linea" data-linea="${l}"${ok ? '' : ` disabled title="Sin perfil de ${l.toLowerCase()} en ${isAdmin() ? 'las granjas seleccionadas' : 'esta granja'}"`} aria-pressed="${l === state.linea && ok}">${ico(LINEA_ICON[l])}${l}</button>`;
-    }).join('')}</div></div>`;
+    return `<div class="filter-group"><span class="field-label">Línea</span><div class="segmented" role="group" aria-label="Línea de producción">${disp.map(l =>
+        `<button type="button" class="seg${l === state.linea ? ' is-active' : ''}" data-action="set-linea" data-linea="${l}" aria-pressed="${l === state.linea}">${ico(LINEA_ICON[l])}${l}</button>`).join('')}</div></div>`;
+}
+
+/** Sector y nave: solo con UNA granja en contexto. Incluye los inactivos (para ver su historial). */
+function ubicacionFilters() {
+    const ids = ctxIds();
+    if (ids.length !== 1) return '';
+    const secs = sectoresDe(ids[0], state.linea);
+    if (!secs.length) return '';
+    if (state.f.sector && !secs.some(s => s.SectorID === state.f.sector)) state.f.sector = '';
+    const naves = (state.f.sector ? [sectorById(state.f.sector)] : secs).flatMap(s => navesDe(s.SectorID).map(n => ({ s, n })));
+    if (state.f.nave && !naves.some(x => x.n.NaveID === state.f.nave)) state.f.nave = '';
+    const inactivo = x => (x.Estado !== 'Activo' ? ' (inactiva)' : '');
+    return `<label class="field"><span>Sector</span><select data-change="f-sector"><option value="">Todos</option>${secs.map(s =>
+        `<option value="${esc(s.SectorID)}"${s.SectorID === state.f.sector ? ' selected' : ''}>${esc(s.Nombre)}${s.Estado !== 'Activo' ? ' (inactivo)' : ''}</option>`).join('')}</select></label>
+        <label class="field"><span>Nave</span><select data-change="f-nave"><option value="">Todas</option>${naves.map(({ s, n }) =>
+        `<option value="${esc(n.NaveID)}"${n.NaveID === state.f.nave ? ' selected' : ''}>${state.f.sector ? '' : esc(s.Nombre) + ' / '}${esc(n.Nombre)}${inactivo(n)}</option>`).join('')}</select></label>`;
+}
+
+function unidadToggle() {
+    return `<div class="filter-group"><span class="field-label">Ver pesos en</span><div class="segmented" role="group" aria-label="Unidad de peso">${Object.keys(UNIDADES).map(u =>
+        `<button type="button" class="seg${u === state.unidad ? ' is-active' : ''}" data-action="set-unidad" data-unidad="${u}" aria-pressed="${u === state.unidad}" title="${UNIDAD_NOMBRE[u]}">${u}</button>`).join('')}</div></div>`;
 }
 
 function dateFilters() {
@@ -608,14 +728,16 @@ function dateFilters() {
         `<button type="button" class="btn btn-sm" data-action="preset" data-days="${d}">${l}</button>`).join('')}</div></div>`;
 }
 
-function filtersCard({ lineas = true, fechas = true, agrupar = false, eliminados = false } = {}) {
+function filtersCard({ lineas = true, fechas = true, agrupar = false, eliminados = false, ubicacion = true, unidad = false } = {}) {
     const disp = lineas ? ensureLinea(ctxIds()) : [];
     return `<div class="card"><div class="filters">
         ${isAdmin() ? granjaPicker() : granjaSwitch()}
         ${lineas ? lineaTabs(disp) : ''}
+        ${lineas && ubicacion ? ubicacionFilters() : ''}
         ${fechas ? dateFilters() : ''}
         ${agrupar ? `<div class="filter-group"><span class="field-label">Agrupar por</span><div class="segmented" role="group" aria-label="Agrupar por">${AGRUPAR.map(([k, l]) =>
         `<button type="button" class="seg${state.f.agrupar === k ? ' is-active' : ''}" data-action="set-agrupar" data-agrupar="${k}" aria-pressed="${state.f.agrupar === k}">${l}</button>`).join('')}</div></div>` : ''}
+        ${unidad ? unidadToggle() : ''}
         ${eliminados && isAdmin() ? `<label class="check"><input type="checkbox" data-change="f-eliminados"${state.f.eliminados ? ' checked' : ''}> Incluir eliminados</label>` : ''}
     </div></div>`;
 }
@@ -626,16 +748,40 @@ function noGranjas() {
         : emptyState('No tienes granjas asignadas. Contacta a la administración.', 'warehouse');
 }
 
+function sinLineas() {
+    return emptyState(isAdmin()
+        ? 'Las granjas seleccionadas aún no tienen ninguna línea de producción (ficha) activa.'
+        : 'Tu granja aún no tiene líneas de producción activas. Contacta a la administración.', 'clipboard-list');
+}
+
+/** Aviso cuando no hay dónde ingresar datos (sin sectores, naves activas o lotes). */
+function sinEstructura(linea) {
+    const ids = ctxIds();
+    const hay = ids.some(id => navesActivas(id, linea).some(({ n }) => loteActivo(n.NaveID)));
+    if (hay) return '';
+    const destino = ids.length === 1 ? `<button type="button" class="btn btn-sm" data-action="open-granja" data-id="${esc(ids[0])}">${ico('layout-grid')}Ir a sectores y naves</button>` : '';
+    return `<div class="alert alert-info">${ico('info')}<span>Para ingresar datos de ${esc(linea.toLowerCase())} se necesita al menos un sector, una nave activa y un lote iniciado.</span>${destino}</div>`;
+}
+
 // ==========================================================================
-// 8. VISTAS: DASHBOARD Y REGISTROS
+// 8. VISTAS: DASHBOARD, REGISTROS, PESAJES Y AMBIENTE
 // ==========================================================================
+
+/** Columna de tabla para un campo de registro (los pesos, en la unidad elegida). */
+function colCampo(c) {
+    return {
+        k: c.k, l: etiquetaCampo(c), t: c.agg ? 'num' : 'text', wrap: c.t === 'textoLargo',
+        get: c.peso ? (r => enUnidad(r[c.k])) : undefined,
+    };
+}
+const COLS_UBICACION = [{ k: 'Sector', l: 'Sector' }, { k: 'Nave', l: 'Nave' }, { k: 'NumeroLote', l: 'Lote' }];
+function colsGranja() { return isAdmin() ? [{ k: 'GranjaID', l: 'Granja', get: x => granjaName(x.GranjaID) }] : []; }
 
 function viewDashboard() {
     const ids = ctxIds();
     if (!ids.length) return noGranjas();
-    const head = filtersCard({ agrupar: true });
-    const disp = lineasDisponibles(ids);
-    if (!disp.length) return head + emptyState('Las granjas seleccionadas aún no tienen perfil de postura ni de engorde.', 'clipboard-list');
+    const head = filtersCard({ agrupar: true, unidad: true });
+    if (!lineasDisponibles(ids).length) return head + sinLineas();
 
     const r = need('getRegistros', registrosPayload());
     if (!r) return head + `<div class="kpis">${loadingBlock(1)}</div><div class="grid-2">${loadingBlock(2)}</div>`;
@@ -646,26 +792,34 @@ function viewDashboard() {
     const campos = camposNumericos(linea);
     const agr = state.f.agrupar;
     const rango = state.f.desde || state.f.hasta ? `${fmtDate(state.f.desde) || 'inicio'} a ${fmtDate(state.f.hasta) || 'hoy'}` : 'Todo el historial';
-    const contexto = isAdmin() ? (state.f.granjas.length ? state.f.granjas.map(granjaName).join(', ') : 'Todas las granjas') : granjaName(state.granjaId);
+    const ub = filtroUbicacion();
+    const contexto = [isAdmin() ? (state.f.granjas.length ? state.f.granjas.map(granjaName).join(', ') : 'Todas las granjas') : granjaName(state.granjaId),
+        ub.SectorID && sectorById(ub.SectorID)?.Nombre, ub.NaveID && naveById(ub.NaveID)?.Nombre].filter(Boolean).join(' · ');
 
     let html = head;
     if (r.data.truncado) html += alertBox('warn', 'alert-triangle', 'Hay más registros de los que se pueden analizar a la vez. Reduce el rango de fechas para ver todo.');
-    if (!regs.length) return html + emptyState(`No hay registros de ${linea.toLowerCase()} en el rango seleccionado.`, 'chart-line');
+    if (!regs.length) return html + sinEstructura(linea) + emptyState(`No hay registros de ${linea.toLowerCase()} en el rango seleccionado.`, 'chart-line');
 
     // KPIs del rango completo
     const tot = aggregate(regs, campos, () => 'total')[0];
     const ultimo = new Map();
-    regs.forEach((x) => { if (!ultimo.has(x.GranjaID)) ultimo.set(x.GranjaID, toNum(x.NumeroAves)); });   // vienen de más reciente a más antiguo
+    regs.forEach((x) => { const k = x.NaveID || x.GranjaID; if (!ultimo.has(k)) ultimo.set(k, toNum(x.NumeroAves)); });   // de más reciente a más antiguo
     const aves = [...ultimo.values()].reduce((a, v) => a + (v || 0), 0);
-    html += `<div class="kpis">
-        ${kpi('Registros', nf.format(regs.length), rango, 'clipboard-list')}
-        ${kpi('Aves', nf.format(aves), ultimo.size > 1 ? 'Último registro de cada granja' : 'Último registro', 'bird')}
-        ${kpi('Mortalidad', fmtNum(gSum(tot, 'MortalidadNominal')), `Promedio ${fmtNum(gAvg(tot, 'MortalidadPorcentaje'))} %`, 'activity')}
-        ${kpi('Consumo', `${fmtNum(gSum(tot, 'ConsumoQuintalesTotal'))} qq`, `${fmtNum(gAvg(tot, 'ConsumoGramosAveDia'))} g/ave/día`, 'wheat')}
-        ${linea === 'Postura'
-            ? kpi('Postura', `${fmtNum(gAvg(tot, 'PosturaPorcentaje'))} %`, `Tabla ${fmtNum(gAvg(tot, 'PosturaTabla'))}`, 'egg')
-            : kpi('Peso corporal', fmtNum(gAvg(tot, 'PesoCorporalReal')), `Tabla ${fmtNum(gAvg(tot, 'PesoCorporalTabla'))}`, 'scale')}
-    </div>`;
+    const pc = k => campoDe(linea, k);
+    let k = kpi('Registros', nf.format(regs.length), rango, 'clipboard-list') + kpi('Aves', nf.format(aves), 'Último registro de cada nave', 'bird');
+    if (linea === 'Incubadora') {
+        const inc = gSum(tot, 'HuevoIncubable'), nac = gSum(tot, 'Nacimiento');
+        k += kpi('Huevo incubable', fmtNum(inc), `Transferencia ${fmtNum(gSum(tot, 'HuevoTransferencia'))}`, 'egg')
+            + kpi('Nacimiento', fmtNum(nac), inc ? `${fmtNum(round(nac / inc * 100))} % del incubable` : '', 'trending-up')
+            + kpi('Peso de huevo', fmtPeso(gAvg(tot, 'PesoHuevo')), 'Promedio de los pesajes', 'scale');
+    } else {
+        k += kpi('Mortalidad', fmtNum(gSum(tot, 'MortalidadNominal')), `Promedio ${fmtNum(gAvg(tot, 'MortalidadPorcentaje'))} %`, 'activity')
+            + kpi('Consumo', `${fmtNum(gSum(tot, 'ConsumoQuintalesTotal'))} qq`, `${fmtNum(gAvg(tot, 'ConsumoGramosAveDia'))} g/ave/día`, 'wheat')
+            + kpi('Peso corporal', fmtPeso(gAvg(tot, 'PesoCorporalReal')), `Tabla ${fmtPeso(gAvg(tot, 'PesoCorporalTabla'))}`, 'scale')
+            + kpi('Conversión', fmtNum(gAvg(tot, 'ConversionAlimenticia')), 'kg alimento / kg ganado', 'wheat');
+        if (linea === 'Postura') k += kpi('Postura', `${fmtNum(gAvg(tot, 'PosturaPorcentaje'))} %`, `Tabla ${fmtNum(gAvg(tot, 'PosturaTabla'))}`, 'egg');
+    }
+    html += `<div class="kpis">${k}</div>`;
 
     // Gráficos por periodo
     const grupos = aggregate(regs, campos, x => periodo(x.Fecha, agr));
@@ -673,33 +827,36 @@ function viewDashboard() {
     const sub = `${contexto} · ${rango} · por ${AGRUPAR.find(a => a[0] === agr)[1].toLowerCase()}`;
     html += '<div class="grid-2">' + CHARTS[linea].map((def) => {
         const spec = {
-            title: def.title, subtitle: sub, icon: def.icon, type: def.type, unit: def.unit, labels,
-            series: def.series.map(([k, name, color, dashed]) => ({
+            title: def.peso ? `${def.title} (${state.unidad})` : def.title, subtitle: sub, icon: def.icon, type: def.type,
+            unit: def.peso ? state.unidad : def.unit, labels,
+            series: def.series.map(([key, name, color, dashed]) => ({
                 name, color: PALETTE[color], dashed, stack: def.stack ? 'h' : undefined,
-                data: grupos.map(g => { const c = campos.find(x => x.k === k); return c ? round(gVal(g, c)) : null; }),
+                data: grupos.map(g => { const c = pc(key); return c ? gShow(g, c) : null; }),
             })),
         };
         return chartCard(`${linea}-${def.id}`, spec);
     }).join('') + '</div>';
 
-    // Comparativo por granja (administrador con varias granjas)
-    const porGranja = aggregate(regs, campos, x => x.GranjaID);
-    if (isAdmin() && porGranja.length > 1) {
-        const main = linea === 'Postura' ? ['PosturaPorcentaje', 'PosturaTabla', 'Postura (%)'] : ['PesoCorporalReal', 'PesoCorporalTabla', 'Peso corporal'];
-        html += chartCard(`${linea}-granjas`, {
-            title: `${main[2]} por granja`, subtitle: rango, icon: 'warehouse', type: 'bar',
-            labels: porGranja.map(g => granjaName(g.key)),
-            series: [
-                { name: 'Real (promedio)', color: PALETTE.primary, data: porGranja.map(g => round(gAvg(g, main[0]))) },
-                { name: 'Tabla (promedio)', color: PALETTE.secondary, data: porGranja.map(g => round(gAvg(g, main[1]))) },
-                { name: 'Mortalidad (%)', color: PALETTE.amber, data: porGranja.map(g => round(gAvg(g, 'MortalidadPorcentaje'))) },
-            ],
+    // Comparativo: por granja (admin con varias) o por nave (una granja).
+    const varias = isAdmin() && new Set(regs.map(x => x.GranjaID)).size > 1;
+    const porNave = !varias && new Set(regs.map(x => x.NaveID).filter(Boolean)).size > 1;
+    if (varias || porNave) {
+        const clave = varias ? (x => x.GranjaID) : (x => x.NaveID || '—');
+        const nombre = varias ? granjaName : (id => { const n = naveById(id); return n ? `${sectorById(n.SectorID)?.Nombre || ''} / ${n.Nombre}` : '—'; });
+        const grupo = aggregate(regs, campos, clave);
+        const [real, tabla, titulo] = COMPARATIVO[linea];
+        const cReal = pc(real), cTabla = tabla && pc(tabla);
+        const series = [{ name: 'Real (promedio)', color: PALETTE.primary, data: grupo.map(g => gShow(g, cReal)) }];
+        if (cTabla) series.push({ name: 'Tabla (promedio)', color: PALETTE.secondary, data: grupo.map(g => gShow(g, cTabla)) });
+        html += chartCard(`${linea}-comparativo`, {
+            title: `${titulo}${cReal.peso ? ` (${state.unidad})` : ''} por ${varias ? 'granja' : 'nave'}`, subtitle: rango, icon: varias ? 'warehouse' : 'house',
+            type: 'bar', labels: grupo.map(g => nombre(g.key)), series,
         });
         html += table('comparativo', {
-            title: 'Comparativo por granja', icon: 'warehouse', csv: `comparativo-${linea}`,
-            columns: [{ k: 'granja', l: 'Granja', sticky: true }, { k: 'n', l: 'Registros', t: 'num' }]
-                .concat(campos.map(c => ({ k: c.k, l: `${c.l}${c.agg === 'suma' ? ' (total)' : ' (prom.)'}`, t: 'num' }))),
-            rows: porGranja.map(g => Object.assign({ granja: granjaName(g.key), n: g.n }, ...campos.map(c => ({ [c.k]: round(gVal(g, c)) })))),
+            title: `Comparativo por ${varias ? 'granja' : 'nave'}`, icon: varias ? 'warehouse' : 'house', csv: `comparativo-${linea}`,
+            columns: [{ k: 'nombre', l: varias ? 'Granja' : 'Nave', sticky: true }, { k: 'n', l: 'Registros', t: 'num' }]
+                .concat(campos.map(c => ({ k: c.k, l: `${etiquetaCampo(c)}${c.agg === 'suma' ? ' (total)' : ' (prom.)'}`, t: 'num' }))),
+            rows: grupo.map(g => Object.assign({ nombre: nombre(g.key), n: g.n }, ...campos.map(c => ({ [c.k]: gShow(g, c) })))),
         });
     }
 
@@ -707,33 +864,29 @@ function viewDashboard() {
     html += table('resumen', {
         title: `Resumen por ${AGRUPAR.find(a => a[0] === agr)[1].toLowerCase()}`, icon: 'calendar-range', csv: `resumen-${linea}-${agr}`,
         columns: [{ k: 'key', l: 'Periodo', sticky: true, html: x => esc(periodoLabel(x.key, agr)), csv: x => x.key }, { k: 'n', l: 'Registros', t: 'num' }]
-            .concat(campos.map(c => ({ k: c.k, l: `${c.l}${c.agg === 'suma' ? ' (total)' : ' (prom.)'}`, t: 'num' }))),
-        rows: grupos.map(g => Object.assign({ key: g.key, n: g.n }, ...campos.map(c => ({ [c.k]: round(gVal(g, c)) })))),
+            .concat(campos.map(c => ({ k: c.k, l: `${etiquetaCampo(c)}${c.agg === 'suma' ? ' (total)' : ' (prom.)'}`, t: 'num' }))),
+        rows: grupos.map(g => Object.assign({ key: g.key, n: g.n }, ...campos.map(c => ({ [c.k]: gShow(g, c) })))),
     });
     return html;
 }
 
-function round(v) { return v === null || v === undefined ? null : Math.round(v * 100) / 100; }
-
 function viewRegistros() {
     const ids = ctxIds();
     if (!ids.length) return noGranjas();
-    const head = filtersCard({ eliminados: true });
-    const disp = lineasDisponibles(ids);
-    if (!disp.length) return head + emptyState('Las granjas seleccionadas aún no tienen perfil de postura ni de engorde.', 'clipboard-list');
+    const head = filtersCard({ eliminados: true, unidad: true });
+    if (!lineasDisponibles(ids).length) return head + sinLineas();
 
     const linea = state.linea;
-    const nuevo = `<div class="row row-center"><button type="button" class="btn btn-primary" data-action="new-registro">${ico('plus')}Nuevo registro de ${linea.toLowerCase()}</button></div>`;
+    const aviso = sinEstructura(linea);
+    const nuevo = aviso || `<div class="row row-center"><button type="button" class="btn btn-primary" data-action="new-registro">${ico('plus')}Nuevo registro de ${linea.toLowerCase()}</button></div>`;
     const r = need('getRegistros', registrosPayload({ incluirEliminados: isAdmin() && state.f.eliminados ? true : undefined }));
     if (!r) return head + nuevo + loadingBlock(1);
     if (!r.ok) return head + nuevo + errorBlock(r);
 
     state.registros = new Map(r.data.registros.map(x => [x.RegistroID, x]));
-    const varias = isAdmin() && ctxIds().length > 1;
-    const columns = [{ k: 'Fecha', l: 'Fecha', t: 'datetime', sticky: true }]
-        .concat(varias || isAdmin() ? [{ k: 'GranjaID', l: 'Granja', get: x => granjaName(x.GranjaID) }] : [])
-        .concat([{ k: 'NumeroLote', l: 'Lote' }])
-        .concat(camposDe(linea).map(c => ({ k: c.k, l: c.l, t: c.agg ? 'num' : 'text', wrap: c.t === 'textoLargo' })))
+    const columns = [{ k: 'Fecha', l: 'Fecha', t: 'date', sticky: true }]
+        .concat(colsGranja(), COLS_UBICACION, [{ k: 'LineaGenetica', l: 'Línea genética' }])
+        .concat(camposDe(linea).map(colCampo))
         .concat(isAdmin() && state.f.eliminados ? [{ k: 'Estado', l: 'Estado', html: x => badgeEstado(x.Estado === 'Activo' ? 'Activo' : 'Eliminado') }] : [])
         .concat([{ k: 'CreadoPor', l: 'Registrado por' }, { k: 'ActualizadoEn', l: 'Última edición', t: 'datetime' }]);
 
@@ -756,6 +909,127 @@ function viewRegistros() {
     return html;
 }
 
+function viewPesajes() {
+    const ids = ctxIds();
+    if (!ids.length) return noGranjas();
+    const head = filtersCard({ unidad: true, eliminados: true });
+    if (!lineasDisponibles(ids).length) return head + sinLineas();
+    const linea = state.linea;
+    const tipo = linea === 'Incubadora' ? 'huevo' : 'ave';
+    const aviso = sinEstructura(linea);
+    const nuevo = aviso || `<div class="section-head"><p class="muted">Se elige la nave, la unidad y el tamaño de la muestra, y se pesa ${tipo === 'huevo' ? 'cada huevo' : 'cada ave'} por separado. El promedio pasa al registro de ese día.</p>
+        <button type="button" class="btn btn-primary" data-action="new-pesaje">${ico('scale')}Nuevo pesaje</button></div>`;
+    const r = need('getPesajes', registrosPayload({ incluirEliminados: isAdmin() && state.f.eliminados ? true : undefined }));
+    if (!r) return head + nuevo + loadingBlock(1);
+    if (!r.ok) return head + nuevo + errorBlock(r);
+
+    state.pesajes = new Map(r.data.pesajes.map(x => [x.PesajeID, x]));
+    const pesoCol = (k, l) => ({ k, l: `${l} (${state.unidad})`, t: 'num', get: x => round(enUnidad(x[k]), decimalesPeso()) });
+    const columns = [{ k: 'Fecha', l: 'Fecha', t: 'date', sticky: true }]
+        .concat(colsGranja(), COLS_UBICACION, [
+            { k: 'Muestra', l: 'Muestra', t: 'num' },
+            pesoCol('PromedioG', 'Promedio'), pesoCol('MinimoG', 'Mínimo'), pesoCol('MaximoG', 'Máximo'),
+            { k: 'CV', l: 'CV (%)', t: 'num' }, { k: 'Uniformidad', l: 'Uniformidad (%)', t: 'num' },
+        ])
+        .concat(linea === 'Incubadora' ? [] : [{ k: 'ConversionAlimenticia', l: 'Conversión alimenticia', t: 'num' }])
+        .concat([{ k: 'Unidad', l: 'Capturado en' }, { k: 'Pesos', l: 'Pesos individuales', nocsv: false, wrap: true, html: x => `<span class="muted">${esc(String(x.Pesos || '').split(',').length)} pesos</span>` },
+            { k: 'CreadoPor', l: 'Registrado por' }])
+        .concat(isAdmin() && state.f.eliminados ? [{ k: 'Estado', l: 'Estado', html: x => badgeEstado(x.Estado === 'Activo' ? 'Activo' : 'Eliminado') }] : []);
+
+    return head + nuevo + table('pesajes', {
+        title: `Pesajes de ${linea.toLowerCase()}`, icon: 'scale', csv: `pesajes-${linea}`,
+        empty: 'No hay pesajes en el rango seleccionado.', columns, rows: r.data.pesajes,
+        rowClass: x => (x.Estado !== 'Activo' ? 'is-deleted' : ''),
+        actions: x => `<button type="button" class="icon-btn icon-btn-sm" data-action="ver-pesaje" data-id="${esc(x.PesajeID)}" title="Ver los pesos" aria-label="Ver los pesos">${ico('list-checks')}</button>`
+            + (x.Estado === 'Activo' ? `<button type="button" class="icon-btn icon-btn-sm" data-action="edit-pesaje" data-id="${esc(x.PesajeID)}" title="Editar" aria-label="Editar pesaje">${ico('pencil')}</button>
+               <button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-pesaje" data-id="${esc(x.PesajeID)}" title="Eliminar" aria-label="Eliminar pesaje">${ico('trash')}</button>` : ''),
+    });
+}
+
+function viewAmbiente() {
+    const ids = ctxIds();
+    if (!ids.length) return noGranjas();
+    const head = filtersCard();
+    if (!lineasDisponibles(ids).length) return head + sinLineas();
+    const linea = state.linea;
+    const hayNaves = ids.some(id => navesActivas(id, linea).length);
+    const acciones = hayNaves
+        ? `<div class="section-head"><p class="muted">Índice de estrés calórico (IEC) = temperatura ambiente en °C + humedad relativa en %. Cada lectura queda guardada con su fecha y hora.</p>
+            <button type="button" class="btn btn-primary" data-action="new-lectura">${ico('thermometer')}Nueva lectura</button></div>`
+        : `<div class="alert alert-info">${ico('info')}<span>Para registrar lecturas se necesita al menos una nave activa de ${esc(linea.toLowerCase())}.</span></div>`;
+    const leyenda = `<div class="card"><div class="card-head card-title-center"><h3>${ico('thermometer')}Escala del índice de estrés calórico</h3></div>
+        <div class="iec-scale">${state.db.iecRangos.map((x, i) => {
+        const prev = state.db.iecRangos[i - 1];
+        const rango = !prev ? `Menor a ${x.hasta}` : x.hasta === null ? `Mayor a ${Math.floor(prev.hasta)}` : `${prev.hasta} a ${Math.floor(x.hasta)}`;
+        return `<div class="iec-item iec-${esc(x.color)}"><strong>${esc(rango)}</strong><span class="iec-desc">${esc(x.descripcion)}</span><span class="muted">${esc(x.comportamiento)}</span></div>`;
+    }).join('')}</div></div>`;
+    const payload = { Linea: linea, GranjaIDs: apiGranjas(), ...filtroUbicacion(), desde: state.f.desde || undefined, hasta: state.f.hasta || undefined };
+    const r = need('getAmbiente', payload);
+    if (!r) return head + acciones + leyenda + loadingBlock(1);
+    if (!r.ok) return head + acciones + leyenda + errorBlock(r);
+
+    const lecturas = r.data.lecturas;
+    state.lecturas = new Map(lecturas.map(x => [x.LecturaID, x]));
+    return head + acciones + chartCard(`iec-${linea}`, heatmapSpec(lecturas)) + leyenda + table('lecturas', {
+        title: 'Lecturas de temperatura y humedad', icon: 'thermometer', csv: `ambiente-${linea}`,
+        empty: 'No hay lecturas en el rango seleccionado.',
+        columns: [{ k: 'FechaHora', l: 'Fecha y hora', t: 'datetime', sticky: true }]
+            .concat(colsGranja(), [{ k: 'Sector', l: 'Sector' }, { k: 'Nave', l: 'Nave' },
+                { k: 'Temperatura', l: 'Temperatura (°C)', t: 'num' }, { k: 'Humedad', l: 'Humedad relativa (%)', t: 'num' },
+                { k: 'Indice', l: 'IEC', t: 'num' }, { k: 'Nivel', l: 'Nivel', html: x => badgeIec(x.Indice, x.Nivel) },
+                { k: 'CreadoPor', l: 'Registrado por' }]),
+        rows: lecturas,
+        actions: x => `<button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-lectura" data-id="${esc(x.LecturaID)}" title="Eliminar" aria-label="Eliminar lectura">${ico('trash')}</button>`,
+    });
+}
+
+/** Mapa de calor: filas = naves, columnas = días (o semanas si el rango es largo); celda = IEC máximo. */
+function heatmapSpec(lecturas) {
+    const dias = lecturas.map(x => String(x.FechaHora).slice(0, 10));
+    const desde = state.f.desde || (dias.length ? dias.reduce((a, b) => (a < b ? a : b)) : today());
+    const hasta = state.f.hasta || today();
+    const todos = [];
+    for (let d = desde; d <= hasta && todos.length < 1000; d = sumarDias(d, 1)) todos.push(d);
+    const semanal = todos.length > 92;
+    const cols = [...new Set(todos.map(d => (semanal ? periodo(d, 'semana') : d)))];
+    const naves = new Map();
+    lecturas.forEach((x) => {
+        if (!naves.has(x.NaveID)) naves.set(x.NaveID, `${isAdmin() && ctxIds().length > 1 ? granjaName(x.GranjaID) + ' · ' : ''}${x.Sector} / ${x.Nave}`);
+    });
+    const filas = [...naves.entries()].sort((a, b) => a[1].localeCompare(b[1], 'es', { numeric: true }));
+    const max = {};
+    const cuenta = {};
+    lecturas.forEach((x) => {
+        const d = String(x.FechaHora).slice(0, 10);
+        const k = `${x.NaveID}|${semanal ? periodo(d, 'semana') : d}`;
+        const v = toNum(x.Indice);
+        if (v === null) return;
+        if (!(k in max) || v > max[k]) max[k] = v;
+        cuenta[k] = (cuenta[k] || 0) + 1;
+    });
+    const values = filas.map(([id]) => cols.map(c => (`${id}|${c}` in max ? max[`${id}|${c}`] : null)));
+    const etiqueta = c => (semanal ? periodoLabel(c, 'semana') : fmtDate(c).slice(0, 5));
+    return {
+        type: 'heatmap', title: 'Mapa de calor del estrés calórico', icon: 'thermometer',
+        subtitle: `${semanal ? 'IEC máximo por semana' : 'IEC máximo por día'} · ${fmtDate(desde)} a ${fmtDate(hasta)}`,
+        rows: filas.map(f => f[1]), cols: cols.map(etiqueta), values,
+        color: v => IEC_COLOR[nivelIec(v)?.color] || '#ccc',
+        legend: state.db.iecRangos.map(x => ({ color: IEC_COLOR[x.color], label: x.nivel })).concat([{ color: 'rgba(107, 132, 163, 0.25)', label: 'Sin lectura' }]),
+        tip: (ri, ci) => {
+            const v = values[ri][ci];
+            const k = `${filas[ri][0]}|${cols[ci]}`;
+            return [filas[ri][1], `${semanal ? 'Semana ' + periodoLabel(cols[ci], 'semana') : fmtDate(cols[ci])}`,
+                v === null ? 'Sin lectura' : `IEC máximo ${fmtNum(v)} · ${nivelIec(v)?.nivel || ''}`, v === null ? '' : `${cuenta[k]} lectura(s)`].filter(Boolean);
+        },
+    };
+}
+
+function sumarDias(ymd, n) {
+    const [y, m, d] = ymd.split('-').map(Number);
+    const x = new Date(Date.UTC(y, m - 1, d + n));
+    return x.toISOString().slice(0, 10);
+}
+
 // ==========================================================================
 // 9. VISTAS: GRANJAS, PERFILES Y USUARIOS
 // ==========================================================================
@@ -767,12 +1041,15 @@ function representantesDe(granjaId) {
 function viewGranjas() {
     const rows = state.db.granjas.map(g => ({
         ...g,
-        _postura: perfilDe(g.GranjaID, 'Postura'),
-        _engorde: perfilDe(g.GranjaID, 'Engorde'),
+        _lineas: LINEAS.filter(l => perfilDe(g.GranjaID, l)),
+        _naves: state.db.naves.filter(n => n.GranjaID === g.GranjaID && n.Estado === 'Activo').length,
         _reps: representantesDe(g.GranjaID).length,
     }));
-    const lineaBadge = p => (!p ? '<span class="badge badge-muted">No</span>' : p.Estado === 'Activo' ? '<span class="badge badge-ok">Sí</span>' : '<span class="badge badge-warn">Suspendido</span>');
-    return `<div class="section-head"><p class="muted">Cada granja puede tener una línea de postura y una de engorde, cada una con su propia ficha.</p>
+    const lineasBadges = g => (g._lineas.length ? g._lineas.map((l) => {
+        const p = perfilDe(g.GranjaID, l);
+        return `<span class="badge ${p.Estado === 'Activo' ? '' : 'badge-warn'}" title="${p.Estado === 'Activo' ? '' : 'Suspendida'}">${ico(LINEA_ICON[l], 'icon-sm')}${esc(l)}</span>`;
+    }).join(' ') : '<span class="badge badge-muted">Sin líneas</span>');
+    return `<div class="section-head"><p class="muted">Cada granja tiene sus propias líneas (reproductora, incubadora, engorde y postura), cada una con su ficha, sus sectores y sus naves.</p>
         <button type="button" class="btn btn-primary" data-action="new-granja">${ico('plus')}Nueva granja</button></div>`
         + table('granjas', {
             title: 'Granjas', icon: 'warehouse', empty: 'Aún no hay granjas registradas.',
@@ -780,21 +1057,24 @@ function viewGranjas() {
                 { k: 'NombreGranja', l: 'Granja', sticky: true, html: g => `<button type="button" class="btn btn-link" data-action="open-granja" data-id="${esc(g.GranjaID)}">${esc(g.NombreGranja)}</button>${g.Alterado ? ` <span class="badge badge-danger" title="Modificada fuera de la plataforma">${ico('lock', 'icon-sm')}</span>` : ''}` },
                 { k: 'Propietario', l: 'Propietario' },
                 { k: 'Ubicacion', l: 'Ubicación' },
-                { k: '_postura', l: 'Postura', get: g => (g._postura ? g._postura.Estado : 'No'), html: g => lineaBadge(g._postura) },
-                { k: '_engorde', l: 'Engorde', get: g => (g._engorde ? g._engorde.Estado : 'No'), html: g => lineaBadge(g._engorde) },
+                { k: '_lineas', l: 'Líneas', get: g => g._lineas.join(', '), html: lineasBadges },
+                { k: '_naves', l: 'Naves activas', t: 'num' },
                 { k: '_reps', l: 'Representantes', t: 'num' },
                 { k: 'Estado', l: 'Estado', html: g => badgeEstado(g.Estado) },
                 { k: 'FechaAlta', l: 'Alta', t: 'date' },
             ],
             rows,
-            actions: g => `<button type="button" class="icon-btn icon-btn-sm" data-action="open-granja" data-id="${esc(g.GranjaID)}" title="Ver ficha" aria-label="Ver ficha">${ico('arrow-up-right')}</button>
+            actions: g => `<button type="button" class="icon-btn icon-btn-sm" data-action="open-granja" data-id="${esc(g.GranjaID)}" title="Ver granja" aria-label="Ver granja">${ico('arrow-up-right')}</button>
                 <button type="button" class="icon-btn icon-btn-sm" data-action="edit-granja" data-id="${esc(g.GranjaID)}" title="Editar" aria-label="Editar granja">${ico('pencil')}</button>
                 <button type="button" class="icon-btn icon-btn-sm" data-action="estado-granja" data-id="${esc(g.GranjaID)}" title="${g.Estado === 'Activo' ? 'Suspender' : 'Activar'}" aria-label="${g.Estado === 'Activo' ? 'Suspender' : 'Activar'} granja">${ico(g.Estado === 'Activo' ? 'circle-pause' : 'circle-play')}</button>
                 <button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-granja" data-id="${esc(g.GranjaID)}" title="Eliminar" aria-label="Eliminar granja">${ico('trash')}</button>`,
         });
 }
 
-/** Información general de la granja: datos + las dos líneas lado a lado (la que no existe, en gris). */
+/**
+ * Granja: datos generales + cada línea que tiene (ficha, sectores, naves y lotes).
+ * Las líneas que la granja no tiene no se muestran (el admin puede agregarlas).
+ */
 function viewGranja(param) {
     const id = isAdmin() ? param : state.granjaId;
     if (!state.db.granjas.length && !isAdmin()) return noGranjas();
@@ -827,9 +1107,19 @@ function viewGranja(param) {
         </div>
     </div>`;
 
-    html += `<div class="grid-2">${LINEAS.map(l => perfilCard(g, l)).join('')}</div>`;
+    const lineas = LINEAS.filter(l => perfilDe(g.GranjaID, l));
+    if (!lineas.length) {
+        html += emptyState(admin ? 'Esta granja aún no tiene líneas de producción. Agrega la primera abajo.' : 'Tu granja aún no tiene líneas de producción activas. Contacta a la administración.', 'clipboard-list');
+    }
+    html += lineas.map(l => lineaCard(g, l)).join('');
 
     if (admin) {
+        const faltan = LINEAS.filter(l => !perfilDe(g.GranjaID, l));
+        if (faltan.length) {
+            html += `<div class="card"><div class="card-head card-title-center"><h3>${ico('plus')}Agregar línea de producción</h3></div>
+                <p class="muted center">Cada línea tiene su propia ficha. Solo se muestran las líneas que la granja tiene.</p>
+                <div class="row row-center">${faltan.map(l => `<button type="button" class="btn btn-sm" data-action="new-perfil" data-granja="${esc(g.GranjaID)}" data-linea="${l}">${ico(LINEA_ICON[l])}${l}</button>`).join('')}</div></div>`;
+        }
         const reps = representantesDe(g.GranjaID);
         html += `<div class="card"><div class="card-head card-title-center"><h3>${ico('users')}Representantes</h3></div>
             ${reps.length ? `<div class="chips">${reps.map(u => `<span class="chip">${ico('user', 'icon-sm')}${esc(u.Nombre)} · ${esc(u.Email)} ${badgeEstado(u.Estado)}</span>`).join('')}</div>`
@@ -839,16 +1129,10 @@ function viewGranja(param) {
     return html;
 }
 
-function perfilCard(g, linea) {
+function lineaCard(g, linea) {
     const p = perfilDe(g.GranjaID, linea);
     const admin = isAdmin();
-    if (!p) {
-        return `<div class="card is-disabled" aria-disabled="true">
-            <div class="card-head card-title-center"><h2>${ico(LINEA_ICON[linea])}Línea de ${linea.toLowerCase()}</h2></div>
-            <div class="empty-line">${ico(LINEA_ICON[linea], 'icon-lg')}<p>Esta granja no tiene línea de ${linea.toLowerCase()}.</p>
-            ${admin ? `<button type="button" class="btn btn-sm" data-action="new-perfil" data-granja="${esc(g.GranjaID)}" data-linea="${linea}">${ico('plus')}Crear perfil de ${linea.toLowerCase()}</button>` : ''}</div>
-        </div>`;
-    }
+    const activa = p.Estado === 'Activo';
     const secciones = [];
     state.db.campos.perfil.forEach((c) => {
         let s = secciones.find(x => x.s === c.s);
@@ -860,15 +1144,64 @@ function perfilCard(g, linea) {
         if (v === '' || v === undefined) return '<dd class="empty">—</dd>';
         return `<dd>${esc(c.t === 'fecha' ? fmtDate(v) : c.k === 'EdadReproductoraSemanas' ? `${v} semanas` : v)}</dd>`;
     };
-    return `<div class="card${p.Estado !== 'Activo' ? ' is-disabled' : ''}">
-        <div class="card-head card-title-center"><h2>${ico(LINEA_ICON[linea])}Línea de ${linea.toLowerCase()}</h2>${badgeEstado(p.Estado)}${p.Alterado ? `<span class="badge badge-danger">${ico('lock', 'icon-sm')}Modificado fuera de la plataforma</span>` : ''}</div>
-        ${secciones.map(s => `<section class="profile-section"><h3>${ico(SECCION_ICON[s.s] || 'list')}${esc(s.s)}</h3>
-            <dl class="kv">${s.campos.map(c => `<div><dt>${esc(c.l)}</dt>${valor(c)}</div>`).join('')}</dl></section>`).join('')}
-        ${p.ActualizadoEn ? `<p class="muted center">Última actualización ${esc(fmtDateTime(p.ActualizadoEn))}</p>` : ''}
-        ${admin ? `<div class="row row-center">
-            <button type="button" class="btn btn-sm" data-action="edit-perfil" data-id="${esc(p.PerfilID)}">${ico('pencil')}Editar ficha</button>
-            <button type="button" class="btn btn-sm" data-action="estado-perfil" data-id="${esc(p.PerfilID)}">${ico(p.Estado === 'Activo' ? 'circle-pause' : 'circle-play')}${p.Estado === 'Activo' ? 'Suspender' : 'Activar'}</button>
-            <button type="button" class="btn btn-sm btn-danger" data-action="delete-perfil" data-id="${esc(p.PerfilID)}">${ico('trash')}Eliminar</button></div>` : ''}
+    const sectores = sectoresDe(g.GranjaID, linea);
+    return `<div class="card linea-card${activa ? '' : ' is-disabled'}">
+        <div class="card-head card-title-center"><h2>${ico(LINEA_ICON[linea])}Línea de ${esc(linea.toLowerCase())}</h2>${badgeEstado(p.Estado)}${p.Alterado ? `<span class="badge badge-danger">${ico('lock', 'icon-sm')}Modificada fuera de la plataforma</span>` : ''}</div>
+        <details class="ficha"><summary>${ico('clipboard-list', 'icon-sm')}Ficha de la línea${ico('chevron-down', 'icon-sm')}</summary>
+            <div class="stack">${secciones.map(s => `<section class="profile-section"><h3>${ico(SECCION_ICON[s.s] || 'list')}${esc(s.s)}</h3>
+                <dl class="kv">${s.campos.map(c => `<div><dt>${esc(c.l)}</dt>${valor(c)}</div>`).join('')}</dl></section>`).join('')}
+            ${p.ActualizadoEn ? `<p class="muted center">Última actualización ${esc(fmtDateTime(p.ActualizadoEn))}</p>` : ''}
+            ${admin ? `<div class="row row-center">
+                <button type="button" class="btn btn-sm" data-action="edit-perfil" data-id="${esc(p.PerfilID)}">${ico('pencil')}Editar ficha</button>
+                <button type="button" class="btn btn-sm" data-action="estado-perfil" data-id="${esc(p.PerfilID)}">${ico(activa ? 'circle-pause' : 'circle-play')}${activa ? 'Suspender línea' : 'Activar línea'}</button>
+                <button type="button" class="btn btn-sm btn-danger" data-action="delete-perfil" data-id="${esc(p.PerfilID)}">${ico('trash')}Eliminar línea</button></div>` : ''}</div>
+        </details>
+        <div class="estructura">
+            <div class="row row-between"><h3 class="estructura-titulo">${ico('layout-grid')}Sectores y naves</h3>
+                ${activa ? `<button type="button" class="btn btn-sm" data-action="new-sector" data-granja="${esc(g.GranjaID)}" data-linea="${linea}">${ico('plus')}Nuevo sector</button>` : ''}</div>
+            ${sectores.length ? sectores.map(sectorBlock).join('') : `<p class="muted center">${activa ? 'Aún no hay sectores. Crea el primero para registrar datos.' : 'Línea suspendida.'}</p>`}
+        </div>
+    </div>`;
+}
+
+function sectorBlock(s) {
+    const naves = navesDe(s.SectorID);
+    const activo = s.Estado === 'Activo';
+    return `<section class="sector${activo ? '' : ' is-inactive'}">
+        <div class="sector-head">
+            <strong>${ico('layout-grid', 'icon-sm')}${esc(s.Nombre)}</strong>${activo ? '' : badgeEstado('Inactivo')}
+            <div class="row">
+                ${activo ? `<button type="button" class="btn btn-sm" data-action="new-nave" data-id="${esc(s.SectorID)}">${ico('plus')}Nave</button>` : ''}
+                <button type="button" class="icon-btn icon-btn-sm" data-action="edit-sector" data-id="${esc(s.SectorID)}" title="Renombrar" aria-label="Renombrar sector">${ico('pencil')}</button>
+                <button type="button" class="icon-btn icon-btn-sm" data-action="estado-sector" data-id="${esc(s.SectorID)}" title="${activo ? 'Desactivar' : 'Activar'}" aria-label="${activo ? 'Desactivar' : 'Activar'} sector">${ico(activo ? 'circle-pause' : 'circle-play')}</button>
+                ${naves.length ? '' : `<button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-sector" data-id="${esc(s.SectorID)}" title="Eliminar" aria-label="Eliminar sector">${ico('trash')}</button>`}
+            </div>
+        </div>
+        ${naves.length ? `<div class="naves">${naves.map(naveCard).join('')}</div>` : '<p class="muted center">Sin naves.</p>'}
+    </section>`;
+}
+
+function naveCard(n) {
+    const activa = n.Estado === 'Activo';
+    const lote = loteActivo(n.NaveID);
+    const historial = lotesDe(n.NaveID).filter(l => l.Estado !== 'Activo');
+    const tieneLotes = lotesDe(n.NaveID).length > 0;
+    const loteHtml = lote
+        ? `<div class="lote">${ico('tag', 'icon-sm')}<span><strong>Lote ${esc(lote.NumeroLote)}</strong> · ${esc(lote.LineaGenetica)}<br><span class="muted">Desde ${esc(fmtDate(lote.FechaInicio))}${lote.AvesIniciales ? ` · ${esc(fmtNum(lote.AvesIniciales))} aves` : ''}</span></span></div>`
+        : '<div class="lote muted">Sin lote activo</div>';
+    return `<div class="nave${activa ? '' : ' is-inactive'}">
+        <div class="nave-head"><strong>${ico('house', 'icon-sm')}${esc(n.Nombre)}</strong>${activa ? '' : badgeEstado('Inactivo')}</div>
+        ${loteHtml}
+        <div class="row row-center">
+            ${activa && !lote ? `<button type="button" class="btn btn-sm btn-primary" data-action="new-lote" data-id="${esc(n.NaveID)}">${ico('tag')}Iniciar lote</button>` : ''}
+            ${lote ? `<button type="button" class="btn btn-sm" data-action="edit-lote" data-id="${esc(lote.LoteID)}">${ico('tag')}Editar lote</button>
+                <button type="button" class="btn btn-sm" data-action="cerrar-lote" data-id="${esc(lote.LoteID)}">Cerrar lote</button>` : ''}
+            <button type="button" class="icon-btn icon-btn-sm" data-action="edit-nave" data-id="${esc(n.NaveID)}" title="Renombrar nave" aria-label="Renombrar nave">${ico('pencil')}</button>
+            <button type="button" class="icon-btn icon-btn-sm" data-action="estado-nave" data-id="${esc(n.NaveID)}" title="${activa ? 'Desactivar' : 'Activar'} nave" aria-label="${activa ? 'Desactivar' : 'Activar'} nave">${ico(activa ? 'circle-pause' : 'circle-play')}</button>
+            ${tieneLotes ? '' : `<button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-nave" data-id="${esc(n.NaveID)}" title="Eliminar nave" aria-label="Eliminar nave">${ico('trash')}</button>`}
+        </div>
+        ${historial.length ? `<details class="historial"><summary>Lotes anteriores (${historial.length})</summary><ul>${historial.map((l, i) => `<li><span>${esc(l.NumeroLote)} · ${esc(l.LineaGenetica)} · ${esc(fmtDate(l.FechaInicio))} a ${esc(fmtDate(l.FechaCierre))}</span>
+            ${i === 0 && !lote ? `<button type="button" class="btn btn-link" data-action="reabrir-lote" data-id="${esc(l.LoteID)}">Reabrir</button>` : ''}</li>`).join('')}</ul></details>` : ''}
     </div>`;
 }
 
@@ -1083,16 +1416,18 @@ function justField(help = 'Explica el motivo. Queda registrado en la bitácora.'
         <small class="field-hint">${esc(help)} Mínimo ${CONFIG.MIN_JUSTIFICACION} caracteres.</small></label>`;
 }
 
-function inputFor(c, value = '') {
+function inputFor(c, value = '', { unidad = 'g' } = {}) {
     const req = c.req ? ' required' : '';
-    const lbl = `<span>${esc(c.l)}${c.req ? ' <span class="req">*</span>' : ''}</span>`;
+    const maxBase = c.peso && c.max !== undefined ? round(c.max / factorDe(unidad), 4) : c.max;
+    const k = esc(c.k), min = esc(c.min ?? ''), max = esc(maxBase ?? '');
+    const lbl = `<span>${esc(c.l)}${c.peso ? ` (<span data-unidad-label>${esc(unidad)}</span>)` : ''}${c.req ? ' <span class="req">*</span>' : ''}</span>`;
     const v = esc(value ?? '');
-    if (c.t === 'textoLargo') return `<label class="field span-all">${lbl}<textarea name="${c.k}" maxlength="1000"${req}>${v}</textarea></label>`;
+    if (c.t === 'textoLargo') return `<label class="field span-all">${lbl}<textarea name="${k}" maxlength="1000"${req}>${v}</textarea></label>`;
     if (c.t === 'entero' || c.t === 'numero') {
-        return `<label class="field">${lbl}<input type="number" name="${c.k}" inputmode="${c.t === 'entero' ? 'numeric' : 'decimal'}" step="${c.t === 'entero' ? '1' : 'any'}"${c.min !== undefined ? ` min="${c.min}"` : ''}${c.max !== undefined ? ` max="${c.max}"` : ''} value="${v}"${req}></label>`;
+        return `<label class="field">${lbl}<input type="number" name="${k}"${c.peso ? ` data-peso data-max-g="${esc(c.max ?? '')}"` : ''} inputmode="${c.t === 'entero' ? 'numeric' : 'decimal'}" step="${c.t === 'entero' ? '1' : 'any'}"${min !== '' ? ` min="${min}"` : ''}${max !== '' ? ` max="${max}"` : ''} value="${v}"${req}></label>`;
     }
-    if (c.t === 'fecha') return `<label class="field">${lbl}<input type="date" name="${c.k}" value="${v}"${req}></label>`;
-    return `<label class="field">${lbl}<input type="text" name="${c.k}" maxlength="${c.max || 150}"${c.lista ? ` list="dl-${c.lista}"` : ''} value="${v}" autocomplete="off"${req}></label>`;
+    if (c.t === 'fecha') return `<label class="field">${lbl}<input type="date" name="${k}" value="${v}"${req}></label>`;
+    return `<label class="field">${lbl}<input type="text" name="${k}" maxlength="${esc(c.max || 150)}"${c.lista ? ` list="dl-${esc(c.lista)}"` : ''} value="${v}" autocomplete="off"${req}></label>`;
 }
 
 function datalists() {
@@ -1116,30 +1451,64 @@ function formPayload(fd) {
     return o;
 }
 
+// ---------- Ubicación (nave + fecha) para registros y pesajes ----------
+/** Selector de nave activa (agrupado por granja/sector) y fecha de trabajo. */
+function ubicacionInputs(linea, { naveId = '', fecha = today(), conFecha = true } = {}) {
+    const granjas = isAdmin() ? ctxIds() : [state.granjaId];
+    const opciones = granjas.flatMap(gid => navesActivas(gid, linea).map(x => ({ gid, ...x })));
+    if (!opciones.length) return null;
+    const grupos = new Map();
+    opciones.forEach(({ gid, s, n }) => {
+        const k = `${granjas.length > 1 ? granjaName(gid) + ' · ' : ''}${s.Nombre}`;
+        if (!grupos.has(k)) grupos.set(k, []);
+        grupos.get(k).push(n);
+    });
+    const elegida = naveId || (state.f.nave && opciones.some(o => o.n.NaveID === state.f.nave) ? state.f.nave : opciones[0].n.NaveID);
+    const select = `<label class="field"><span>Nave <span class="req">*</span></span><select name="NaveID" required data-change="ubic-info">${[...grupos.entries()].map(([k, naves]) =>
+        `<optgroup label="${esc(k)}">${naves.map(n => `<option value="${esc(n.NaveID)}"${n.NaveID === elegida ? ' selected' : ''}>${esc(n.Nombre)}</option>`).join('')}</optgroup>`).join('')}</select></label>`;
+    const min = fechaMinima();
+    const fechaHtml = conFecha ? `<label class="field"><span>Fecha <span class="req">*</span></span><input type="date" name="Fecha" required value="${esc(fecha)}" max="${today()}"${min ? ` min="${min}"` : ''} data-change="ubic-info">
+        <small class="field-hint">${isAdmin() ? 'Hoy o cualquier día anterior.' : `Hoy o hasta ${state.db.diasRetroactivos} días atrás.`}</small></label>` : '';
+    return `${select}${fechaHtml}<div class="span-all" data-ubic-info>${infoUbicacion(elegida, fecha)}</div>`;
+}
+function infoUbicacion(naveId, fecha) {
+    const n = naveById(naveId);
+    if (!n) return '';
+    const l = loteEn(naveId, fecha);
+    return l
+        ? `<div class="alert alert-info">${ico('tag')}<span>Lote <strong>${esc(l.NumeroLote)}</strong> · ${esc(l.LineaGenetica)} · desde ${esc(fmtDate(l.FechaInicio))}</span></div>`
+        : `<div class="alert alert-warn">${ico('alert-triangle')}<span>${esc(n.Nombre)} no tenía un lote activo el ${esc(fmtDate(fecha))}. Inicia el lote en la vista de la granja.</span></div>`;
+}
+
 // ---------- Registros ----------
 async function openRegistroModal(reg = null) {
     const linea = state.linea;
-    const campos = camposDe(linea);
-    const comunes = new Set(camposComunes().map(c => c.k));
-    let granjaHtml;
+    const campos = camposEntrada(linea);
+    const calculados = camposDe(linea).filter(c => c.calc);
+    const conPeso = campos.some(c => c.peso);
+    const unidad = state.unidad;
+    let ubic;
     if (reg) {
-        granjaHtml = `<label class="field"><span>Granja</span><input value="${esc(granjaName(reg.GranjaID))}" readonly></label>
-            <label class="field"><span>Fecha del registro</span><input value="${esc(fmtDateTime(reg.Fecha))}" readonly></label>`;
-    } else if (!isAdmin()) {
-        granjaHtml = `<label class="field"><span>Granja</span><input value="${esc(granjaName(state.granjaId))}" readonly></label>
-            <label class="field"><span>Fecha</span><input value="Automática" readonly></label>`;
+        ubic = `<label class="field"><span>Granja</span><input value="${esc(granjaName(reg.GranjaID))}" readonly></label>
+            <label class="field"><span>Sector / nave</span><input value="${esc([reg.Sector, reg.Nave].filter(Boolean).join(' / ') || '—')}" readonly></label>
+            <label class="field"><span>Lote</span><input value="${esc([reg.NumeroLote, reg.LineaGenetica].filter(Boolean).join(' · ') || '—')}" readonly></label>
+            <label class="field"><span>Fecha</span><input value="${esc(fmtDate(reg.Fecha))}" readonly></label>`;
     } else {
-        const opciones = ctxIds().filter(id => perfilDe(id, linea)?.Estado === 'Activo' && granjaById(id)?.Estado === 'Activo');
-        if (!opciones.length) return toast(`Ninguna granja activa seleccionada tiene perfil de ${linea.toLowerCase()}.`, 'error');
-        granjaHtml = `<label class="field"><span>Granja <span class="req">*</span></span><select name="GranjaID" required>${opciones.map(id =>
-            `<option value="${esc(id)}">${esc(granjaName(id))}</option>`).join('')}</select></label>
-            <label class="field"><span>Fecha</span><input value="Automática" readonly></label>`;
+        ubic = ubicacionInputs(linea);
+        if (!ubic) return toast(`No hay naves activas de ${linea.toLowerCase()} donde registrar.`, 'error');
     }
-    const sec = (title, icon, list) => `<section class="form-section"><h3>${ico(icon)}${esc(title)}</h3><div class="form-grid">${list.map(c => inputFor(c, reg?.[c.k])).join('')}</div></section>`;
-    const body = `<section class="form-section"><div class="form-grid">${granjaHtml}</div></section>
-        ${sec('Datos generales', 'bird', campos.filter(c => comunes.has(c.k)))}
-        ${sec(linea === 'Postura' ? 'Producción de huevo' : 'Peso corporal', linea === 'Postura' ? 'egg' : 'scale', campos.filter(c => !comunes.has(c.k) && c.k !== 'Comentarios'))}
+    // Grupos de campos: generales, propios de la línea y observaciones.
+    const zoo = new Set(camposEntrada('Engorde').map(c => c.k));
+    const generales = campos.filter(c => (linea === 'Incubadora' ? ['NumeroAves', 'EdadSemanas', 'MortalidadPorcentaje'].includes(c.k) : zoo.has(c.k)) && c.k !== 'Comentarios');
+    const propios = campos.filter(c => !generales.includes(c) && c.k !== 'Comentarios');
+    const valor = c => (c.peso ? (reg ? round(enUnidad(reg[c.k], unidad), 4) : '') : reg?.[c.k]);
+    const sec = (title, icon, list) => (list.length ? `<section class="form-section"><h3>${ico(icon)}${esc(title)}</h3><div class="form-grid">${list.map(c => inputFor(c, valor(c), { unidad })).join('')}</div></section>` : '');
+    const body = `<section class="form-section"><div class="form-grid">${ubic}</div></section>
+        ${conPeso ? `<section class="form-section"><div class="row row-center"><span class="field-label">Los pesos de este formulario están en</span>${unidadSelect('UnidadPeso', unidad)}</div></section>` : ''}
+        ${sec('Datos zootécnicos', LINEA_ICON[linea], generales)}
+        ${sec(linea === 'Postura' ? 'Producción de huevo' : linea === 'Incubadora' ? 'Incubación' : 'Otros datos', linea === 'Postura' ? 'egg' : 'archive', propios)}
         ${sec('Observaciones', 'clipboard-list', campos.filter(c => c.k === 'Comentarios'))}
+        ${calculados.length ? alertBox('info', 'info', `Se calculan automáticamente: ${calculados.map(c => esc(c.l)).join(', ')}.`) : ''}
         ${reg ? `<section class="form-section">${justField('Explica qué se corrige y por qué.')}</section>` : ''}`;
 
     await openModal({
@@ -1149,18 +1518,24 @@ async function openRegistroModal(reg = null) {
             const p = formPayload(fd);
             const payload = { ...p, Linea: linea };
             if (reg) payload.RegistroID = reg.RegistroID;
-            else if (!isAdmin()) payload.GranjaID = state.granjaId;
             const aves = toNum(p.NumeroAves), muertas = toNum(p.MortalidadNominal);
             if (aves !== null && muertas !== null && muertas > aves) throw new Error('La mortalidad no puede ser mayor que el número de aves.');
+            const inc = toNum(p.HuevoIncubable), nac = toNum(p.Nacimiento);
+            if (inc !== null && nac !== null && nac > inc) throw new Error('Los nacimientos no pueden ser más que los huevos incubables.');
             await save('saveRegistro', payload, reg ? 'Registro actualizado.' : 'Registro guardado.', { snapshot: false });
         },
     });
 }
 
+function unidadSelect(name, actual) {
+    return `<select class="select select-inline" name="${esc(name)}" data-change="form-unidad" data-prev="${esc(actual)}" aria-label="Unidad de peso">${Object.keys(UNIDADES).map(u =>
+        `<option value="${u}"${u === actual ? ' selected' : ''}>${UNIDAD_NOMBRE[u]} (${u})</option>`).join('')}</select>`;
+}
+
 async function deleteRegistroFlow(reg) {
     await openModal({
         title: 'Eliminar registro', danger: true, submitLabel: 'Eliminar',
-        body: `<p class="center">Registro del <strong>${esc(fmtDateTime(reg.Fecha))}</strong> · ${esc(granjaName(reg.GranjaID))} · ${esc(fmtNum(reg.NumeroAves))} aves.</p>
+        body: `<p class="center">Registro del <strong>${esc(fmtDate(reg.Fecha))}</strong> · ${esc([granjaName(reg.GranjaID), reg.Sector, reg.Nave].filter(Boolean).join(' / '))} · ${esc(fmtNum(reg.NumeroAves))} aves.</p>
             <p class="muted center">Dejará de verse y de contarse en el dashboard. Queda guardado en el historial${isAdmin() ? ' y puedes restaurarlo' : ' y la administración puede restaurarlo'}.</p>
             ${justField()}`,
         onSubmit: async fd => save('deleteRegistro', { Linea: state.linea, RegistroID: reg.RegistroID, justificacion: fd.get('justificacion') }, 'Registro eliminado.', { snapshot: false }),
@@ -1170,8 +1545,290 @@ async function deleteRegistroFlow(reg) {
 async function restoreRegistroFlow(reg) {
     await openModal({
         title: 'Restaurar registro', submitLabel: 'Restaurar',
-        body: `<p class="center">Registro del <strong>${esc(fmtDateTime(reg.Fecha))}</strong> · ${esc(granjaName(reg.GranjaID))}.</p>${justField()}`,
+        body: `<p class="center">Registro del <strong>${esc(fmtDate(reg.Fecha))}</strong> · ${esc([granjaName(reg.GranjaID), reg.Sector, reg.Nave].filter(Boolean).join(' / '))}.</p>${justField()}`,
         onSubmit: async fd => save('restoreRegistro', { Linea: state.linea, RegistroID: reg.RegistroID, justificacion: fd.get('justificacion') }, 'Registro restaurado.', { snapshot: false }),
+    });
+}
+
+// ---------- Pesajes por muestra ----------
+const borradorKey = (naveId, fecha) => `granjas.pesaje.${naveId}.${fecha}`;
+function leerBorrador(naveId, fecha) {
+    try { return JSON.parse(sessionStorage.getItem(borradorKey(naveId, fecha)) || 'null'); } catch { return null; }
+}
+function guardarBorrador() {
+    if (!pz || pz.editando || !pz.naveId) return;
+    try { sessionStorage.setItem(borradorKey(pz.naveId, pz.fecha), JSON.stringify({ unidad: pz.unidad, muestra: pz.muestra, pesos: pz.pesos })); } catch { /* sin almacenamiento */ }
+}
+function borrarBorrador(naveId, fecha) {
+    try { sessionStorage.removeItem(borradorKey(naveId, fecha)); } catch { /* sin almacenamiento */ }
+}
+
+/** Estadísticas de la muestra en la unidad de captura (las mismas fórmulas que el servidor). */
+function statsMuestra(pesos) {
+    if (!pesos.length) return null;
+    const prom = pesos.reduce((a, b) => a + b, 0) / pesos.length;
+    const sd = pesos.length > 1 ? Math.sqrt(pesos.reduce((a, v) => a + (v - prom) ** 2, 0) / (pesos.length - 1)) : 0;
+    const dentro = pesos.filter(v => Math.abs(v - prom) <= prom * 0.1).length;
+    return { prom, min: Math.min(...pesos), max: Math.max(...pesos), cv: prom ? sd / prom * 100 : 0, unif: dentro / pesos.length * 100 };
+}
+
+function pzRender() {
+    const box = $('[data-pz]');
+    if (!box || !pz) return;
+    const n = pz.pesos.length;
+    const total = pz.muestra || 0;
+    const quien = pz.tipo === 'huevo' ? 'huevo' : 'ave';
+    box.querySelector('[data-pz-count]').textContent = `${nf.format(n)} de ${nf.format(total)}`;
+    box.querySelector('[data-pz-bar]').style.width = `${total ? Math.min(100, n / total * 100) : 0}%`;
+    box.querySelector('[data-pz-bar]').classList.toggle('is-full', n === total && total > 0);
+    const input = box.querySelector('#pz-input');
+    input.placeholder = n < total ? `Peso del ${quien} #${n + 1} (${pz.unidad})` : 'Muestra completa';
+    input.disabled = n >= total;
+    const st = statsMuestra(pz.pesos);
+    const f = v => new Intl.NumberFormat('es-GT', { maximumFractionDigits: pz.unidad === 'g' ? 1 : 3 }).format(v);
+    box.querySelector('[data-pz-stats]').innerHTML = st
+        ? [['Promedio', `${f(st.prom)} ${pz.unidad}`], ['Mínimo', `${f(st.min)} ${pz.unidad}`], ['Máximo', `${f(st.max)} ${pz.unidad}`], ['CV', `${fmtNum(st.cv)} %`], ['Uniformidad', `${fmtNum(st.unif)} %`]]
+            .map(([l, v]) => `<div><dt>${esc(l)}</dt><dd>${esc(v)}</dd></div>`).join('')
+        : '<p class="muted center">Ingresa el primer peso.</p>';
+    box.querySelector('[data-pz-list]').innerHTML = pz.pesos.map((v, i) =>
+        `<li><span class="pz-num">${i + 1}</span>${esc(f(v))}<button type="button" class="icon-btn icon-btn-sm danger" data-action="pz-del" data-i="${i}" aria-label="Quitar el peso ${i + 1}" title="Quitar">${ico('x')}</button></li>`).join('');
+    const excedente = n > total;
+    box.querySelector('[data-pz-aviso]').innerHTML = excedente ? alertBox('warn', 'alert-triangle', `Hay ${n - total} peso(s) de más para una muestra de ${total}. Quita los sobrantes o aumenta la muestra.`) : '';
+    guardarBorrador();
+}
+
+/** Agrega uno o varios pesos (separados por espacio, coma, punto y coma o salto de línea). */
+function pzAgregar(texto) {
+    if (!pz) return;
+    const partes = String(texto).split(/[\s;,]+/).map(s => s.trim()).filter(Boolean);
+    const malos = [];
+    partes.forEach((s) => {
+        const v = Number(s);
+        if (!Number.isFinite(v) || v <= 0) { malos.push(s); return; }
+        if (pz.pesos.length < pz.muestra) pz.pesos.push(v);
+    });
+    if (malos.length) toast(`No se agregaron valores no válidos: ${malos.slice(0, 5).join(' ')}`, 'error');
+    pzRender();
+}
+
+async function openPesajeModal(pes = null) {
+    const linea = pes ? pes.Linea : state.linea;
+    const tipo = linea === 'Incubadora' ? 'huevo' : 'ave';
+    let ubic;
+    if (pes) {
+        ubic = `<label class="field"><span>Sector / nave</span><input value="${esc([pes.Sector, pes.Nave].join(' / '))}" readonly></label>
+            <label class="field"><span>Fecha</span><input value="${esc(fmtDate(pes.Fecha))}" readonly></label>`;
+    } else {
+        ubic = ubicacionInputs(linea);
+        if (!ubic) return toast(`No hay naves activas de ${linea.toLowerCase()}.`, 'error');
+    }
+    pz = pes
+        ? { editando: true, tipo, unidad: pes.Unidad || 'g', muestra: toNum(pes.Muestra) || 0, pesos: String(pes.Pesos || '').split(',').map(Number).filter(Number.isFinite) }
+        : { editando: false, tipo, unidad: state.unidad === 'g' || tipo === 'huevo' ? 'g' : state.unidad, muestra: 100, pesos: [] };
+    const body = `<section class="form-section"><div class="form-grid">${ubic}</div></section>
+        <section class="form-section"><h3>${ico('list-checks')}Muestra</h3><div class="form-grid">
+            <label class="field"><span>Unidad de pesaje <span class="req">*</span></span><select name="Unidad" data-change="pz-config">${Object.keys(UNIDADES).map(u => `<option value="${u}"${u === pz.unidad ? ' selected' : ''}>${UNIDAD_NOMBRE[u]} (${u})</option>`).join('')}</select>
+                <small class="field-hint">Se usa para toda la muestra.</small></label>
+            <label class="field"><span>Tamaño de la muestra <span class="req">*</span></span><input type="number" name="Muestra" min="1" max="${state.db.maxMuestra}" step="1" inputmode="numeric" required value="${pz.muestra}" data-change="pz-config">
+                <small class="field-hint">Número de ${tipo === 'huevo' ? 'huevos' : 'aves'} que se van a pesar.</small></label>
+        </div></section>
+        <section class="form-section pz" data-pz>
+            <h3>${ico('scale')}Peso de cada ${tipo}</h3>
+            <div class="pz-progress"><div class="pz-bar" data-pz-bar></div></div>
+            <p class="center"><strong data-pz-count></strong> pesados</p>
+            <div class="pz-entrada">
+                <input id="pz-input" class="input" type="text" inputmode="decimal" autocomplete="off" aria-label="Peso">
+                <button type="button" class="btn btn-primary" data-action="pz-add">${ico('plus')}Agregar</button>
+                <button type="button" class="btn" data-action="pz-undo" title="Quitar el último">${ico('undo')}Deshacer</button>
+            </div>
+            <small class="field-hint center">Presiona Enter después de cada peso. También puedes pegar varios separados por espacios o comas.</small>
+            <div data-pz-aviso></div>
+            <dl class="kv pz-stats" data-pz-stats></dl>
+            <ol class="pz-list" data-pz-list></ol>
+        </section>
+        ${pes ? `<section class="form-section">${justField('Explica qué se corrige (por ejemplo, un peso mal digitado).')}</section>` : ''}`;
+
+    // Si hay una muestra a medias guardada en este dispositivo, se recupera.
+    if (!pes) {
+        const sel = /name="NaveID"[^>]*>[\s\S]*?<option value="([^"]+)" selected/.exec(ubic);
+        const b = sel && leerBorrador(sel[1], today());
+        if (b && b.pesos?.length) { Object.assign(pz, { unidad: b.unidad, muestra: b.muestra, pesos: b.pesos }); setTimeout(() => toast(`Se recuperó una muestra sin guardar (${b.pesos.length} pesos).`, 'info'), 300); }
+    }
+
+    const promesa = openModal({
+        title: pes ? 'Editar pesaje' : `Nuevo pesaje · ${linea.toLowerCase()}`, wide: true, body,
+        submitLabel: pes ? 'Guardar cambios' : 'Guardar pesaje',
+        onSubmit: async (fd) => {
+            pz.unidad = fd.get('Unidad');
+            pz.muestra = toNum(fd.get('Muestra'));
+            if (pz.pesos.length !== pz.muestra) {
+                throw new Error(`La muestra es de ${pz.muestra} y hay ${pz.pesos.length} pesos. Deben ser exactamente ${pz.muestra}.`);
+            }
+            const payload = { Unidad: pz.unidad, Muestra: pz.muestra, Pesos: pz.pesos };
+            if (pes) Object.assign(payload, { PesajeID: pes.PesajeID, justificacion: fd.get('justificacion') });
+            else Object.assign(payload, { Linea: linea, NaveID: fd.get('NaveID'), Fecha: fd.get('Fecha') });
+            await save('savePesaje', payload, pes ? 'Pesaje actualizado.' : 'Pesaje guardado.', { snapshot: false });
+            if (!pes) borrarBorrador(payload.NaveID, payload.Fecha);
+        },
+    });
+    const form = $('#modal form');
+    if (!pes && form) { pz.naveId = form.NaveID.value; pz.fecha = form.Fecha.value; }
+    pzRender();
+    $('#pz-input')?.focus();
+    await promesa;
+    pz = null;
+}
+
+async function verPesajeModal(pes) {
+    const valores = String(pes.Pesos || '').split(',').filter(Boolean);
+    await openModal({
+        title: `Pesaje del ${fmtDate(pes.Fecha)}`, cancelLabel: 'Cerrar', wide: true,
+        body: `<p class="center">${esc([granjaName(pes.GranjaID), pes.Sector, pes.Nave, pes.NumeroLote ? 'Lote ' + pes.NumeroLote : ''].filter(Boolean).join(' / '))}</p>
+            <dl class="kv">${[['Muestra', pes.Muestra], ['Promedio', fmtPeso(pes.PromedioG)], ['Mínimo', fmtPeso(pes.MinimoG)], ['Máximo', fmtPeso(pes.MaximoG)],
+            ['CV', `${fmtNum(pes.CV)} %`], ['Uniformidad', `${fmtNum(pes.Uniformidad)} %`], ['Conversión alimenticia', pes.ConversionAlimenticia ? fmtNum(pes.ConversionAlimenticia) : '—']]
+            .map(([l, v]) => `<div><dt>${esc(l)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+            <section class="form-section"><h3>${ico('list-checks')}Pesos individuales (${esc(pes.Unidad)})</h3>
+            <ol class="pz-list">${valores.map((v, i) => `<li><span class="pz-num">${i + 1}</span>${esc(v)}</li>`).join('')}</ol></section>`,
+    });
+}
+
+async function deletePesajeFlow(pes) {
+    await openModal({
+        title: 'Eliminar pesaje', danger: true, submitLabel: 'Eliminar',
+        body: `<p class="center">Pesaje del <strong>${esc(fmtDate(pes.Fecha))}</strong> · ${esc([pes.Sector, pes.Nave].join(' / '))} · muestra de ${esc(pes.Muestra)}.</p>${justField()}`,
+        onSubmit: async fd => save('deletePesaje', { PesajeID: pes.PesajeID, justificacion: fd.get('justificacion') }, 'Pesaje eliminado.', { snapshot: false }),
+    });
+}
+
+// ---------- Ambiente (estrés calórico) ----------
+async function openLecturaModal() {
+    const ubic = ubicacionInputs(state.linea, { conFecha: false });
+    if (!ubic) return toast('No hay naves activas.', 'error');
+    await openModal({
+        title: 'Nueva lectura de ambiente',
+        body: `<div class="form-grid">${ubic}
+            <label class="field"><span>Temperatura ambiente en grados Celsius (°C) <span class="req">*</span></span><input type="number" name="Temperatura" step="any" min="-20" max="60" inputmode="decimal" required data-input="iec-calc">
+                <small class="field-hint">Escríbela en °C (no en °F).</small></label>
+            <label class="field"><span>Humedad relativa (%) <span class="req">*</span></span><input type="number" name="Humedad" step="any" min="0" max="100" inputmode="decimal" required data-input="iec-calc"></label>
+            <div class="span-all" data-iec-preview><p class="muted center">IEC = temperatura (°C) + humedad (%).</p></div>
+        </div>
+        <p class="muted center">La fecha y la hora se registran automáticamente al guardar.</p>`,
+        submitLabel: 'Guardar lectura',
+        onSubmit: async fd => save('saveLectura', { NaveID: fd.get('NaveID'), Temperatura: fd.get('Temperatura'), Humedad: fd.get('Humedad') }, (r) => `Lectura guardada: IEC ${fmtNum(r.Indice)} (${r.Nivel}).`, { snapshot: false }),
+    });
+}
+
+async function deleteLecturaFlow(x) {
+    await openModal({
+        title: 'Eliminar lectura', danger: true, submitLabel: 'Eliminar',
+        body: `<p class="center">${esc(fmtDateTime(x.FechaHora))} · ${esc([x.Sector, x.Nave].join(' / '))} · IEC ${esc(fmtNum(x.Indice))}.</p>${justField()}`,
+        onSubmit: async fd => save('deleteLectura', { LecturaID: x.LecturaID, justificacion: fd.get('justificacion') }, 'Lectura eliminada.', { snapshot: false }),
+    });
+}
+
+// ---------- Estructura: sectores, naves y lotes ----------
+async function openSectorModal(granjaId, linea, s = null) {
+    await openModal({
+        title: s ? `Renombrar ${s.Nombre}` : `Nuevo sector · ${linea.toLowerCase()}`,
+        body: `<div class="form-grid"><label class="field span-all"><span>Nombre del sector <span class="req">*</span></span><input name="Nombre" required maxlength="80" value="${esc(s?.Nombre || '')}" autocomplete="off"></label>
+            ${s ? justField('Los registros anteriores conservan el nombre que tenían.') : ''}</div>`,
+        submitLabel: s ? 'Guardar' : 'Crear sector',
+        onSubmit: async (fd) => {
+            const p = { Nombre: fd.get('Nombre') };
+            if (s) Object.assign(p, { SectorID: s.SectorID, justificacion: fd.get('justificacion') });
+            else Object.assign(p, { GranjaID: granjaId, Linea: linea });
+            await save('saveSector', p, s ? 'Sector renombrado.' : 'Sector creado.');
+        },
+    });
+}
+
+async function openNaveModal(sectorId, n = null) {
+    const s = sectorById(sectorId || n?.SectorID);
+    await openModal({
+        title: n ? `Renombrar ${n.Nombre}` : `Nueva nave en ${s?.Nombre || ''}`,
+        body: `<div class="form-grid"><label class="field span-all"><span>Nombre de la nave <span class="req">*</span></span><input name="Nombre" required maxlength="80" value="${esc(n?.Nombre || '')}" autocomplete="off"></label>
+            ${n ? justField('Los registros anteriores conservan el nombre que tenían.') : ''}</div>`,
+        submitLabel: n ? 'Guardar' : 'Crear nave',
+        onSubmit: async (fd) => {
+            const p = { Nombre: fd.get('Nombre') };
+            if (n) Object.assign(p, { NaveID: n.NaveID, justificacion: fd.get('justificacion') });
+            else p.SectorID = sectorId;
+            await save('saveNave', p, n ? 'Nave renombrada.' : 'Nave creada.');
+        },
+    });
+}
+
+/** Activar/desactivar un sector o una nave (lo pasado no cambia; lo nuevo se bloquea). */
+async function estadoEstructuraFlow(tipo, row) {
+    const activar = row.Estado !== 'Activo';
+    const nombre = tipo === 'sector' ? 'el sector' : 'la nave';
+    await openModal({
+        title: `${activar ? 'Activar' : 'Desactivar'} ${row.Nombre}`, danger: !activar, submitLabel: activar ? 'Activar' : 'Desactivar',
+        body: `<p class="center">${activar ? `Se podrán volver a ingresar datos en ${nombre}.` : `No se podrán ingresar datos nuevos en ${nombre}${tipo === 'sector' ? ' ni en sus naves' : ''}. Todo su historial se conserva y sigue visible.`}</p>${justField()}`,
+        onSubmit: async (fd) => {
+            const p = { Estado: activar ? 'Activo' : 'Inactivo', justificacion: fd.get('justificacion') };
+            if (tipo === 'sector') p.SectorID = row.SectorID; else p.NaveID = row.NaveID;
+            await save(tipo === 'sector' ? 'setSectorEstado' : 'setNaveEstado', p, activar ? 'Activado.' : 'Desactivado.');
+        },
+    });
+}
+
+async function deleteEstructuraFlow(tipo, row) {
+    await openModal({
+        title: `Eliminar ${row.Nombre}`, danger: true, submitLabel: 'Eliminar',
+        body: `<p class="center">Solo es posible si ${tipo === 'sector' ? 'el sector no tiene naves' : 'la nave nunca tuvo lotes ni datos'}. Si ya se usó, desactívala para conservar el historial.</p>${justField()}`,
+        onSubmit: async (fd) => {
+            const p = { justificacion: fd.get('justificacion') };
+            if (tipo === 'sector') p.SectorID = row.SectorID; else p.NaveID = row.NaveID;
+            await save(tipo === 'sector' ? 'deleteSector' : 'deleteNave', p, 'Eliminado.');
+        },
+    });
+}
+
+/** Opciones de línea genética según la línea de producción (desplegable con grupos). */
+function geneticaSelect(linea, actual = '') {
+    const tipos = state.db.geneticaDe?.[linea] || [];
+    const grupos = tipos.map(t => [t, state.db.listas.filter(l => l.Tipo === t).sort((a, b) => String(a.Valor).localeCompare(String(b.Valor), 'es', { numeric: true }))]);
+    return `<select name="LineaGenetica" required><option value="">Elige la línea genética…</option>${grupos.map(([t, vals]) =>
+        `<optgroup label="${esc(LISTA_LABEL[t] || t)}">${vals.map(v => `<option${v.Valor === actual ? ' selected' : ''}>${esc(v.Valor)}</option>`).join('')}</optgroup>`).join('')}</select>`;
+}
+
+async function openLoteModal(naveId, lote = null) {
+    const n = naveById(naveId || lote?.NaveID);
+    await openModal({
+        title: lote ? `Editar lote ${lote.NumeroLote}` : `Iniciar lote en ${n?.Nombre || ''}`,
+        body: `<div class="form-grid">
+            <label class="field"><span>Número de lote <span class="req">*</span></span><input name="NumeroLote" required maxlength="60" value="${esc(lote?.NumeroLote || '')}" autocomplete="off"></label>
+            <label class="field"><span>Línea genética <span class="req">*</span></span>${geneticaSelect(n.Linea, lote?.LineaGenetica)}</label>
+            <label class="field"><span>Fecha de inicio <span class="req">*</span></span><input type="date" name="FechaInicio" required max="${today()}" value="${esc(lote?.FechaInicio || today())}"></label>
+            <label class="field"><span>Aves iniciales</span><input type="number" name="AvesIniciales" min="0" step="1" inputmode="numeric" value="${esc(lote?.AvesIniciales || '')}"></label>
+            ${lote ? justField('Si cambias el número de lote o la línea genética, se actualizan también sus registros y pesajes.') : ''}
+        </div>
+        ${lote ? '' : '<p class="muted center">La nave solo puede tener un lote activo. Ciérralo cuando termine para iniciar el siguiente.</p>'}`,
+        submitLabel: lote ? 'Guardar cambios' : 'Iniciar lote',
+        onSubmit: async (fd) => {
+            const p = formPayload(fd);
+            if (lote) p.LoteID = lote.LoteID; else p.NaveID = n.NaveID;
+            await save('saveLote', p, lote ? 'Lote actualizado.' : 'Lote iniciado.');
+        },
+    });
+}
+
+async function cerrarLoteFlow(lote) {
+    await openModal({
+        title: `Cerrar lote ${lote.NumeroLote}`, submitLabel: 'Cerrar lote',
+        body: `<div class="form-grid"><label class="field span-all"><span>Fecha de cierre <span class="req">*</span></span><input type="date" name="FechaCierre" required min="${esc(lote.FechaInicio)}" max="${today()}" value="${today()}"></label>
+            <label class="field span-all"><span>Comentario</span><textarea name="justificacion" maxlength="1000"></textarea></label></div>
+            <p class="muted center">Después del cierre no se podrán ingresar datos de este lote. Sus datos se conservan.</p>`,
+        onSubmit: async fd => save('cerrarLote', { LoteID: lote.LoteID, FechaCierre: fd.get('FechaCierre'), justificacion: fd.get('justificacion') }, 'Lote cerrado.'),
+    });
+}
+
+async function reabrirLoteFlow(lote) {
+    await openModal({
+        title: `Reabrir lote ${lote.NumeroLote}`, submitLabel: 'Reabrir',
+        body: `<p class="center">El lote volverá a quedar activo y se podrán ingresar datos.</p>${justField()}`,
+        onSubmit: async fd => save('reabrirLote', { LoteID: lote.LoteID, justificacion: fd.get('justificacion') }, 'Lote reabierto.'),
     });
 }
 
@@ -1222,8 +1879,7 @@ async function deleteGranjaFlow(g) {
 // ---------- Perfiles (ficha de cada línea) ----------
 async function openPerfilModal(granjaId, linea, p = null) {
     const g = granjaById(granjaId);
-    const otra = LINEAS.find(l => l !== linea);
-    const fuente = !p ? perfilDe(granjaId, otra) : null;
+    const fuentes = p ? [] : LINEAS.filter(l => l !== linea).map(l => perfilDe(granjaId, l)).filter(Boolean);
     const secciones = [];
     state.db.campos.perfil.forEach((c) => {
         let s = secciones.find(x => x.s === c.s);
@@ -1232,7 +1888,7 @@ async function openPerfilModal(granjaId, linea, p = null) {
     });
     // Valores sugeridos al crear: los datos de la granja (el resto se puede copiar de la otra línea).
     const inicial = p || { NombreGranja: g?.NombreGranja || '', Ubicacion: g?.Ubicacion || '' };
-    const body = (fuente ? alertBox('info', 'copy', `Esta granja ya tiene ficha de ${otra.toLowerCase()}. <button type="button" class="btn btn-sm" data-action="copy-perfil" data-from="${esc(fuente.PerfilID)}">${ico('copy')}Copiar sus datos como sugerencia</button>`) : '')
+    const body = (fuentes.length ? alertBox('info', 'copy', `Puedes partir de otra ficha de esta granja y luego ajustarla: ${fuentes.map(f => `<button type="button" class="btn btn-sm" data-action="copy-perfil" data-from="${esc(f.PerfilID)}">${ico(LINEA_ICON[f.Linea])}${esc(f.Linea)}</button>`).join(' ')}`) : '')
         + secciones.map(s => `<section class="form-section"><h3>${ico(SECCION_ICON[s.s] || 'list')}${esc(s.s)}</h3><div class="form-grid">${s.campos.map(c => inputFor(c, inicial[c.k])).join('')}</div></section>`).join('')
         + (p ? `<section class="form-section"><div class="form-grid">${justField('Explica qué se actualiza (por ejemplo, un lote nuevo).')}</div></section>` : '')
         + datalists();
@@ -1371,9 +2027,37 @@ const ACTIONS = {
         } catch (e) { showLoginError(authErrorMsg(e)); }
     },
     'nav': el => go(el.dataset.view),
+    'set-unidad': (el) => { state.unidad = el.dataset.unidad; guardarPref('granjas.unidad', state.unidad); render(); },
+
+    // Pesajes
+    'new-pesaje': () => openPesajeModal(),
+    'edit-pesaje': el => openPesajeModal(state.pesajes.get(el.dataset.id)),
+    'ver-pesaje': el => verPesajeModal(state.pesajes.get(el.dataset.id)),
+    'delete-pesaje': el => deletePesajeFlow(state.pesajes.get(el.dataset.id)),
+    'pz-add': () => { const i = $('#pz-input'); if (i && i.value.trim()) { pzAgregar(i.value); i.value = ''; i.focus(); } },
+    'pz-undo': () => { if (pz?.pesos.length) { pz.pesos.pop(); pzRender(); $('#pz-input')?.focus(); } },
+    'pz-del': (el) => { if (pz) { pz.pesos.splice(Number(el.dataset.i), 1); pzRender(); } },
+
+    // Ambiente
+    'new-lectura': () => openLecturaModal(),
+    'delete-lectura': el => deleteLecturaFlow(state.lecturas.get(el.dataset.id)),
+
+    // Estructura de la granja
+    'new-sector': el => openSectorModal(el.dataset.granja, el.dataset.linea),
+    'edit-sector': (el) => { const s = sectorById(el.dataset.id); openSectorModal(s.GranjaID, s.Linea, s); },
+    'estado-sector': el => estadoEstructuraFlow('sector', sectorById(el.dataset.id)),
+    'delete-sector': el => deleteEstructuraFlow('sector', sectorById(el.dataset.id)),
+    'new-nave': el => openNaveModal(el.dataset.id),
+    'edit-nave': el => openNaveModal(null, naveById(el.dataset.id)),
+    'estado-nave': el => estadoEstructuraFlow('nave', naveById(el.dataset.id)),
+    'delete-nave': el => deleteEstructuraFlow('nave', naveById(el.dataset.id)),
+    'new-lote': el => openLoteModal(el.dataset.id),
+    'edit-lote': el => openLoteModal(null, loteById(el.dataset.id)),
+    'cerrar-lote': el => cerrarLoteFlow(loteById(el.dataset.id)),
+    'reabrir-lote': el => reabrirLoteFlow(loteById(el.dataset.id)),
 
     // Filtros
-    'set-linea': (el) => { state.linea = el.dataset.linea; render(); },
+    'set-linea': (el) => { state.linea = el.dataset.linea; state.f.sector = ''; state.f.nave = ''; render(); },
     'set-agrupar': el => setFiltro({ agrupar: el.dataset.agrupar }),
     'preset': (el) => {
         const d = Number(el.dataset.days);
@@ -1452,15 +2136,66 @@ const ACTIONS = {
 function focusGranja(id) {
     if (isAdmin()) state.f.granjas = [id];
     else if (state.db.granjas.some(g => g.GranjaID === id)) state.granjaId = id;
+    state.f.sector = '';
+    state.f.nave = '';
     ensureLinea(ctxIds());
 }
 
 const INPUTS = {
     'table-q': (el) => { state.q[el.dataset.table] = el.value; refreshTable(el.dataset.table); },
+    'iec-calc': (el) => {
+        const t = toNum(el.form.Temperatura.value), h = toNum(el.form.Humedad.value);
+        const box = el.form.querySelector('[data-iec-preview]');
+        if (t === null || h === null) { box.innerHTML = '<p class="muted center">IEC = temperatura (°C) + humedad (%).</p>'; return; }
+        const v = round(t + h);
+        const r = nivelIec(v);
+        box.innerHTML = `<div class="iec-preview iec-${esc(r?.color || '')}"><strong>IEC ${esc(fmtNum(v))}</strong><span>${esc(r?.nivel || '')} · ${esc(r?.descripcion || '')}</span></div>`;
+    },
 };
 
 const CHANGES = {
-    'granja-activa': (el) => { state.granjaId = el.value; ensureLinea(ctxIds()); render(); },
+    'granja-activa': (el) => { state.granjaId = el.value; state.f.sector = ''; state.f.nave = ''; ensureLinea(ctxIds()); render(); },
+    'f-sector': el => setFiltro({ sector: el.value, nave: '' }),
+    'f-nave': el => setFiltro({ nave: el.value }),
+    'ubic-info': (el) => {
+        const f = el.form;
+        const box = f.querySelector('[data-ubic-info]');
+        const fecha = f.Fecha ? f.Fecha.value : today();
+        if (box) box.innerHTML = infoUbicacion(f.NaveID.value, fecha || today());
+        if (pz && !pz.editando) {
+            pz.naveId = f.NaveID.value; pz.fecha = fecha;
+            const b = leerBorrador(pz.naveId, pz.fecha);
+            if (b?.pesos?.length && !pz.pesos.length) {
+                Object.assign(pz, { unidad: b.unidad, muestra: b.muestra, pesos: b.pesos });
+                f.Unidad.value = b.unidad; f.Muestra.value = b.muestra;
+                toast(`Se recuperó una muestra sin guardar (${b.pesos.length} pesos).`, 'info');
+            }
+            pzRender();
+        }
+    },
+    'pz-config': (el) => {
+        if (!pz) return;
+        const f = el.form;
+        if (el.name === 'Unidad' && pz.pesos.length && el.value !== pz.unidad) {
+            if (!confirm('Cambiar la unidad convertirá los pesos ya ingresados. ¿Continuar?')) { el.value = pz.unidad; return; }
+            const fx = factorDe(pz.unidad) / factorDe(el.value);
+            pz.pesos = pz.pesos.map(v => Math.round(v * fx * 1e6) / 1e6);
+        }
+        pz.unidad = f.Unidad.value;
+        pz.muestra = Math.max(0, Math.floor(toNum(f.Muestra.value) || 0));
+        pzRender();
+    },
+    'form-unidad': (el) => {
+        // Convierte los pesos ya escritos a la nueva unidad y ajusta etiquetas y máximos.
+        const antes = el.dataset.prev, ahora = el.value;
+        const fx = factorDe(antes) / factorDe(ahora);
+        el.form.querySelectorAll('input[data-peso]').forEach((i) => {
+            if (i.value !== '') i.value = String(Math.round(Number(i.value) * fx * 1e4) / 1e4);
+            if (i.dataset.maxG) i.max = String(round(Number(i.dataset.maxG) / factorDe(ahora), 4));
+        });
+        el.form.querySelectorAll('[data-unidad-label]').forEach((s) => { s.textContent = ahora; });
+        el.dataset.prev = ahora;
+    },
     'f-granja': (el) => {
         const set = new Set(state.f.granjas);
         if (el.checked) set.add(el.value); else set.delete(el.value);
@@ -1564,6 +2299,12 @@ document.addEventListener('click', (ev) => {
 document.addEventListener('toggle', (ev) => {
     if (ev.target.matches?.('details.dropdown')) state.ddOpen = ev.target.open;
 }, true);
+document.addEventListener('paste', (ev) => {
+    // Pegar varios pesos de una vez (separados por espacios, comas o saltos de línea).
+    if (ev.target.id !== 'pz-input') return;
+    const texto = ev.clipboardData?.getData('text') || '';
+    if (/[\s,;]/.test(texto.trim())) { ev.preventDefault(); pzAgregar(texto); }
+});
 document.addEventListener('input', (ev) => {
     const el = ev.target.closest('[data-input]');
     if (el) INPUTS[el.dataset.input]?.(el, ev);
@@ -1579,6 +2320,12 @@ document.addEventListener('submit', (ev) => {
     SUBMITS[form.dataset.submit]?.(form, ev);
 });
 document.addEventListener('keydown', (ev) => {
+    // Pesaje: Enter agrega el peso y deja el cursor listo para el siguiente.
+    if (ev.key === 'Enter' && ev.target.id === 'pz-input') {
+        ev.preventDefault();
+        if (ev.target.value.trim()) { pzAgregar(ev.target.value); ev.target.value = ''; }
+        return;
+    }
     if (ev.key === 'Escape' && mqMobile.matches && $('#screen-app').classList.contains('sidebar-open')) toggleSidebar(false);
 });
 window.addEventListener('hashchange', () => {

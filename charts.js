@@ -309,14 +309,172 @@ export function mountChart(canvas, spec) {
     return () => { ro.disconnect(); };
 }
 
+// ----------------------------------------------------------------------------
+// Mapa de calor (filas × columnas). spec = { type:'heatmap', title, subtitle?, rows:[nombres],
+//   cols:[etiquetas], values:[[número|null]], color(v) → color, legend:[{color, label}],
+//   tip(r, c) → [líneas de texto] }
+// ----------------------------------------------------------------------------
+
+const HM = { rowH: 30, minCell: 10 };
+
+function heatmapLayout(ctx, w, spec, exporting) {
+    const fs = exporting ? 15 : 12;
+    let top = exporting ? 20 : 8;
+    if (exporting && spec.title) top += fs + 18 + (spec.subtitle ? fs + 10 : 0);
+    // Leyenda (puede ocupar varias filas)
+    ctx.font = `600 ${fs}px ${FONT}`;
+    const items = spec.legend.map(it => ({ it, w: 22 + ctx.measureText(it.label).width + 18 }));
+    const rows = [[]];
+    let rw = 0;
+    items.forEach((x) => {
+        if (rw + x.w > w - 24 && rows[rows.length - 1].length) { rows.push([]); rw = 0; }
+        rows[rows.length - 1].push(x); rw += x.w;
+    });
+    const legendTop = top;
+    const lh = fs + 10;
+    top += rows.length * lh + 8;
+    ctx.font = `600 ${fs - 1}px ${FONT}`;
+    const L = Math.min(w * 0.38, Math.max(60, ...spec.rows.map(r => ctx.measureText(String(r)).width)) + 16);
+    const R = 12;
+    const pw = Math.max(10, w - L - R);
+    const cw = pw / Math.max(spec.cols.length, 1);
+    const rowH = HM.rowH;
+    const B = fs + 22;
+    const height = top + Math.max(spec.rows.length, 1) * rowH + B;
+    return { fs, legendTop, legendRows: rows, lh, top, L, pw, cw, rowH, height };
+}
+
+/** Alto en px CSS que necesita el mapa de calor para un ancho dado. */
+export function heatmapHeight(spec, w, exporting = false) {
+    const c = document.createElement('canvas').getContext('2d');
+    return heatmapLayout(c, w, spec, exporting).height;
+}
+
+function drawHeatmap(ctx, w, h, spec, { hover = null, exporting = false } = {}) {
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+    if (exporting) { ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, w, h); }
+    const lay = heatmapLayout(ctx, w, spec, exporting);
+    const { fs, L, pw, cw, rowH, top } = lay;
+
+    if (exporting && spec.title) {
+        ctx.fillStyle = PALETTE.text; ctx.font = `800 ${fs + 7}px ${FONT}`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        ctx.fillText(spec.title, w / 2, 20);
+        if (spec.subtitle) { ctx.fillStyle = PALETTE.axis; ctx.font = `500 ${fs}px ${FONT}`; ctx.fillText(spec.subtitle, w / 2, 20 + fs + 18); }
+    }
+    // Leyenda centrada
+    ctx.font = `600 ${fs}px ${FONT}`; ctx.textBaseline = 'middle';
+    lay.legendRows.forEach((row, ri) => {
+        const total = row.reduce((a, x) => a + x.w, 0) - 18;
+        let x = (w - total) / 2;
+        const y = lay.legendTop + ri * lay.lh + lay.lh / 2;
+        row.forEach(({ it, w: iw }) => {
+            ctx.fillStyle = it.color; roundRect(ctx, x, y - 7, 14, 14, 3); ctx.fill();
+            ctx.fillStyle = PALETTE.text; ctx.textAlign = 'left'; ctx.fillText(it.label, x + 22, y);
+            x += iw;
+        });
+    });
+
+    if (!spec.rows.length || !spec.cols.length) {
+        ctx.textAlign = 'center'; ctx.fillStyle = PALETTE.axis; ctx.font = `600 ${fs + 1}px ${FONT}`;
+        ctx.fillText('Sin lecturas en el rango seleccionado', w / 2, top + rowH);
+        ctx.restore();
+        return lay;
+    }
+
+    // Etiquetas de filas
+    ctx.font = `600 ${fs - 1}px ${FONT}`; ctx.textAlign = 'right'; ctx.fillStyle = PALETTE.text;
+    spec.rows.forEach((r, i) => ctx.fillText(String(r), L - 10, top + i * rowH + rowH / 2));
+
+    // Celdas
+    const gap = cw > 6 ? 2 : 0.5;
+    spec.values.forEach((fila, i) => fila.forEach((v, j) => {
+        ctx.fillStyle = v === null || v === undefined ? 'rgba(107, 132, 163, 0.12)' : spec.color(v);
+        roundRect(ctx, L + j * cw + gap / 2, top + i * rowH + 2, Math.max(1, cw - gap), rowH - 4, Math.min(5, cw / 3));
+        ctx.fill();
+    }));
+    if (hover) {
+        ctx.strokeStyle = PALETTE.text; ctx.lineWidth = 2;
+        roundRect(ctx, L + hover.c * cw + 1, top + hover.r * rowH + 1, Math.max(2, cw - 2), rowH - 2, 4);
+        ctx.stroke();
+    }
+
+    // Etiquetas de columnas (se saltan las que no caben)
+    ctx.fillStyle = PALETTE.axis; ctx.font = `500 ${fs - 1}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    const maxW = Math.max(1, ...spec.cols.map(c => ctx.measureText(String(c)).width)) + 10;
+    const step = Math.max(1, Math.ceil(maxW / cw));
+    const yLab = top + spec.rows.length * rowH + 8;
+    spec.cols.forEach((c, j) => { if (j % step === 0) ctx.fillText(String(c), L + j * cw + cw / 2, yLab); });
+
+    if (hover && spec.tip) {
+        const lines = spec.tip(hover.r, hover.c);
+        ctx.font = `600 ${fs}px ${FONT}`;
+        const bw = Math.max(...lines.map(l => ctx.measureText(l).width)) + 24;
+        const bh = 12 + lines.length * (fs + 7);
+        let bx = L + hover.c * cw + cw + 10;
+        if (bx + bw > w - 4) bx = L + hover.c * cw - bw - 10;
+        bx = Math.max(4, bx);
+        let by = top + hover.r * rowH - bh / 2 + rowH / 2;
+        by = Math.max(4, Math.min(by, h - bh - 4));
+        ctx.fillStyle = 'rgba(255,255,255,0.97)';
+        ctx.shadowColor = 'rgba(11, 61, 145, 0.22)'; ctx.shadowBlur = 16; ctx.shadowOffsetY = 4;
+        roundRect(ctx, bx, by, bw, bh, 10); ctx.fill();
+        ctx.shadowColor = 'transparent';
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = PALETTE.text;
+        lines.forEach((l, k) => { ctx.font = `${k === 0 ? 700 : 500} ${fs}px ${FONT}`; ctx.fillText(l, bx + 12, by + 6 + k * (fs + 7) + (fs + 7) / 2); });
+    }
+    ctx.restore();
+    return lay;
+}
+
+/** Monta un mapa de calor interactivo. El alto del canvas se ajusta al número de filas. */
+export function mountHeatmap(canvas, spec) {
+    let hover = null;
+    let lay = null;
+    const box = canvas.parentElement;
+    function paint() {
+        const dpr = window.devicePixelRatio || 1;
+        const w = box.clientWidth;
+        if (!w) return;
+        const h = heatmapHeight(spec, w);
+        canvas.style.height = h + 'px';
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        const ctx = canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        lay = drawHeatmap(ctx, w, h, spec, { hover });
+    }
+    function pick(ev) {
+        if (!lay) return;
+        const r = canvas.getBoundingClientRect();
+        const c = Math.floor((ev.clientX - r.left - lay.L) / lay.cw);
+        const f = Math.floor((ev.clientY - r.top - lay.top) / lay.rowH);
+        const next = c >= 0 && c < spec.cols.length && f >= 0 && f < spec.rows.length ? { r: f, c } : null;
+        if (JSON.stringify(next) !== JSON.stringify(hover)) { hover = next; paint(); }
+    }
+    const leave = () => { if (hover) { hover = null; paint(); } };
+    canvas.addEventListener('pointermove', pick);
+    canvas.addEventListener('pointerdown', pick);
+    canvas.addEventListener('pointerleave', leave);
+    const ro = new ResizeObserver(() => paint());
+    ro.observe(box);
+    paint();
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', spec.title || 'Mapa de calor');
+    return () => ro.disconnect();
+}
+
 /** Descarga el gráfico como PNG (1400×720, alta resolución, fondo blanco). */
 export function exportChartPng(spec, filename) {
-    const w = 1400, h = 720, scale = 2;
+    const w = 1400, scale = 2;
+    const h = spec.type === 'heatmap' ? heatmapHeight(spec, w, true) : 720;
     const canvas = document.createElement('canvas');
     canvas.width = w * scale; canvas.height = h * scale;
     const ctx = canvas.getContext('2d');
     ctx.scale(scale, scale);
-    draw(ctx, w, h, spec, { exporting: true });
+    if (spec.type === 'heatmap') drawHeatmap(ctx, w, h, spec, { exporting: true });
+    else draw(ctx, w, h, spec, { exporting: true });
     return new Promise((resolve) => {
         canvas.toBlob((blob) => {
             if (blob) downloadBlob(blob, filename);
