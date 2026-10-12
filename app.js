@@ -1109,17 +1109,19 @@ function viewGranja(param) {
 
     const lineas = LINEAS.filter(l => perfilDe(g.GranjaID, l));
     if (!lineas.length) {
-        html += emptyState(admin ? 'Esta granja aún no tiene líneas de producción. Agrega la primera abajo.' : 'Tu granja aún no tiene líneas de producción activas. Contacta a la administración.', 'clipboard-list');
+        html += emptyState('Esta granja aún no tiene líneas de producción. Agrega la primera abajo.', 'clipboard-list');
     }
     html += lineas.map(l => lineaCard(g, l)).join('');
 
+    // Agregar líneas: el admin en cualquier granja; el representante en la suya (si está activa).
+    const faltan = LINEAS.filter(l => !perfilDe(g.GranjaID, l));
+    if (faltan.length && (admin || g.Estado === 'Activo')) {
+        html += `<div class="card"><div class="card-head card-title-center"><h3>${ico('plus')}Agregar línea de producción</h3></div>
+            <p class="muted center">Cada línea tiene su propia ficha. Solo se muestran las líneas que la granja tiene.</p>
+            <div class="row row-center">${faltan.map(l => `<button type="button" class="btn btn-sm" data-action="new-perfil" data-granja="${esc(g.GranjaID)}" data-linea="${l}">${ico(LINEA_ICON[l])}${l}</button>`).join('')}</div></div>`;
+    }
+
     if (admin) {
-        const faltan = LINEAS.filter(l => !perfilDe(g.GranjaID, l));
-        if (faltan.length) {
-            html += `<div class="card"><div class="card-head card-title-center"><h3>${ico('plus')}Agregar línea de producción</h3></div>
-                <p class="muted center">Cada línea tiene su propia ficha. Solo se muestran las líneas que la granja tiene.</p>
-                <div class="row row-center">${faltan.map(l => `<button type="button" class="btn btn-sm" data-action="new-perfil" data-granja="${esc(g.GranjaID)}" data-linea="${l}">${ico(LINEA_ICON[l])}${l}</button>`).join('')}</div></div>`;
-        }
         const reps = representantesDe(g.GranjaID);
         html += `<div class="card"><div class="card-head card-title-center"><h3>${ico('users')}Representantes</h3></div>
             ${reps.length ? `<div class="chips">${reps.map(u => `<span class="chip">${ico('user', 'icon-sm')}${esc(u.Nombre)} · ${esc(u.Email)} ${badgeEstado(u.Estado)}</span>`).join('')}</div>`
@@ -1151,6 +1153,7 @@ function lineaCard(g, linea) {
             <div class="stack">${secciones.map(s => `<section class="profile-section"><h3>${ico(SECCION_ICON[s.s] || 'list')}${esc(s.s)}</h3>
                 <dl class="kv">${s.campos.map(c => `<div><dt>${esc(c.l)}</dt>${valor(c)}</div>`).join('')}</dl></section>`).join('')}
             ${p.ActualizadoEn ? `<p class="muted center">Última actualización ${esc(fmtDateTime(p.ActualizadoEn))}</p>` : ''}
+            ${!admin && activa ? `<div class="row row-center"><button type="button" class="btn btn-sm" data-action="edit-perfil" data-id="${esc(p.PerfilID)}">${ico('pencil')}Editar ficha</button></div>` : ''}
             ${admin ? `<div class="row row-center">
                 <button type="button" class="btn btn-sm" data-action="edit-perfil" data-id="${esc(p.PerfilID)}">${ico('pencil')}Editar ficha</button>
                 <button type="button" class="btn btn-sm" data-action="estado-perfil" data-id="${esc(p.PerfilID)}">${ico(activa ? 'circle-pause' : 'circle-play')}${activa ? 'Suspender línea' : 'Activar línea'}</button>
