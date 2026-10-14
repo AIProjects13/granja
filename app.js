@@ -408,23 +408,23 @@ function round(v, d = 2) { return v === null || v === undefined ? null : Math.ro
 
 /** Gráficos por línea: [campo, nombre de la serie, color, punteada]. Los pesos usan la unidad elegida. */
 const CHARTS_ZOO = [
-    { id: 'peso', title: 'Peso corporal', icon: 'scale', type: 'line', peso: true, series: [['PesoCorporalReal', 'Peso real (pesaje)', 'primary'], ['PesoCorporalTabla', 'Tabla', 'secondary', true]] },
+    { id: 'peso', title: 'Peso corporal', icon: 'scale', type: 'area', peso: true, series: [['PesoCorporalReal', 'Peso real (pesaje)', 'primary'], ['PesoCorporalTabla', 'Tabla', 'tabla', true]] },
     { id: 'conversion', title: 'Conversión alimenticia', icon: 'wheat', type: 'line', series: [['ConversionAlimenticia', 'Conversión (kg alimento / kg ganado)', 'primary']] },
-    { id: 'mortalidad', title: 'Mortalidad (%)', icon: 'activity', unit: '%', type: 'line', series: [['MortalidadPorcentaje', 'Mortalidad real', 'primary'], ['MortalidadIdeal', 'Ideal', 'tertiary', true]] },
-    { id: 'consumo', title: 'Consumo de alimento (g/ave/día)', icon: 'wheat', unit: 'g', type: 'line', series: [['ConsumoGramosAveDia', 'Consumo real', 'primary'], ['ConsumoTabla', 'Tabla', 'secondary', true]] },
-    { id: 'iec', title: 'Índice de estrés calórico (máx. del día)', icon: 'thermometer', type: 'line', series: [['IndiceEstresCalorico', 'IEC (°C + % HR)', 'amber']] },
-    { id: 'muertes', title: 'Mortalidad (aves)', icon: 'bird', type: 'bar', series: [['MortalidadNominal', 'Mortalidad (aves)', 'amber']] },
+    { id: 'mortalidad', title: 'Mortalidad (%)', icon: 'activity', unit: '%', type: 'line', series: [['MortalidadPorcentaje', 'Mortalidad real', 'primary'], ['MortalidadIdeal', 'Ideal', 'tabla', true]] },
+    { id: 'consumo', title: 'Consumo de alimento (g/ave/día)', icon: 'wheat', unit: 'g', type: 'area', series: [['ConsumoGramosAveDia', 'Consumo real', 'primary'], ['ConsumoTabla', 'Tabla', 'tabla', true]] },
+    { id: 'iec', title: 'Índice de estrés calórico (máx. del día)', icon: 'thermometer', type: 'line', series: [['IndiceEstresCalorico', 'IEC (°C + % HR)', 'primary']] },
+    { id: 'muertes', title: 'Mortalidad (aves)', icon: 'bird', type: 'bar', series: [['MortalidadNominal', 'Mortalidad (aves)', 'primary']] },
 ];
 const CHARTS = {
     Reproductora: CHARTS_ZOO,
     Engorde: CHARTS_ZOO,
     Postura: [
-        { id: 'postura', title: 'Postura / huevo (%)', icon: 'egg', unit: '%', type: 'line', series: [['PosturaPorcentaje', 'Postura real', 'primary'], ['PosturaTabla', 'Tabla', 'secondary', true]] },
-        { id: 'huevo', title: 'Clasificación de huevo', icon: 'chart-column', type: 'bar', stack: true, series: [['HuevoPiwi', 'Piwi', 'slate'], ['HuevoMediano', 'Mediano', 'secondary'], ['HuevoGrande', 'Grande', 'primary'], ['HuevoExtragrande', 'Extragrande', 'tertiary']] },
+        { id: 'postura', title: 'Postura / huevo (%)', icon: 'egg', unit: '%', type: 'area', series: [['PosturaPorcentaje', 'Postura real', 'primary'], ['PosturaTabla', 'Tabla', 'tabla', true]] },
+        { id: 'huevo', title: 'Clasificación de huevo', icon: 'chart-column', type: 'bar', stack: true, series: [['HuevoPiwi', 'Piwi', 'o1'], ['HuevoMediano', 'Mediano', 'o2'], ['HuevoGrande', 'Grande', 'o3'], ['HuevoExtragrande', 'Extragrande', 'o4']] },
     ].concat(CHARTS_ZOO),
     Incubadora: [
-        { id: 'nacimiento', title: '% de nacimiento', icon: 'egg', unit: '%', type: 'line', series: [['PorcentajeNacimiento', 'Nacimiento ÷ huevo incubable', 'primary']] },
-        { id: 'huevos', title: 'Huevos y nacimientos', icon: 'chart-column', type: 'bar', series: [['HuevoIncubable', 'Huevo incubable', 'primary'], ['HuevoTransferencia', 'Huevo de transferencia', 'secondary'], ['Nacimiento', 'Nacimiento', 'tertiary']] },
+        { id: 'nacimiento', title: '% de nacimiento', icon: 'egg', unit: '%', type: 'area', series: [['PorcentajeNacimiento', 'Nacimiento ÷ huevo incubable', 'primary']] },
+        { id: 'huevos', title: 'Huevos y nacimientos', icon: 'chart-column', type: 'bar', series: [['HuevoIncubable', 'Huevo incubable', 'o1'], ['HuevoTransferencia', 'Huevo de transferencia', 'o3'], ['Nacimiento', 'Nacimiento', 'o4']] },
         { id: 'pesohuevo', title: 'Peso de huevo', icon: 'scale', type: 'line', peso: true, series: [['PesoHuevo', 'Peso promedio (pesaje)', 'primary']] },
         { id: 'mortalidad', title: 'Mortalidad (%)', icon: 'activity', unit: '%', type: 'line', series: [['MortalidadPorcentaje', 'Mortalidad', 'primary']] },
     ],
@@ -696,7 +696,7 @@ function granjaPicker() {
 
 /** Solo aparecen las líneas que la granja tiene (las demás no se muestran). */
 function lineaTabs(disp) {
-    return `<div class="filter-group"><span class="field-label">Línea</span><div class="segmented" role="group" aria-label="Línea de producción">${disp.map(l =>
+    return `<div class="filter-group"><span class="field-label">Línea</span><div class="segmented${disp.length > 2 ? ' seg-lineas' : ''}" role="group" aria-label="Línea de producción">${disp.map(l =>
         `<button type="button" class="seg${l === state.linea ? ' is-active' : ''}" data-action="set-linea" data-linea="${l}" aria-pressed="${l === state.linea}">${ico(LINEA_ICON[l])}${l}</button>`).join('')}</div></div>`;
 }
 
@@ -730,7 +730,7 @@ function dateFilters() {
 
 function filtersCard({ lineas = true, fechas = true, agrupar = false, eliminados = false, ubicacion = true, unidad = false } = {}) {
     const disp = lineas ? ensureLinea(ctxIds()) : [];
-    return `<div class="card"><div class="filters">
+    return `<div class="card filters-card"><div class="filters">
         ${isAdmin() ? granjaPicker() : granjaSwitch()}
         ${lineas ? lineaTabs(disp) : ''}
         ${lineas && ubicacion ? ubicacionFilters() : ''}
@@ -821,7 +821,10 @@ function viewDashboard() {
     }
     html += `<div class="kpis">${k}</div>`;
 
-    // Gráficos por periodo
+    // Panorama (como un tablero de Power BI): medidor, dona y comparativo horizontal.
+    html += panorama(linea, regs, campos, tot, rango);
+
+    // Tendencias por periodo
     const grupos = aggregate(regs, campos, x => periodo(x.Fecha, agr));
     const labels = grupos.map(g => periodoLabel(g.key, agr));
     const sub = `${contexto} · ${rango} · por ${AGRUPAR.find(a => a[0] === agr)[1].toLowerCase()}`;
@@ -837,21 +840,13 @@ function viewDashboard() {
         return chartCard(`${linea}-${def.id}`, spec);
     }).join('') + '</div>';
 
-    // Comparativo: por granja (admin con varias) o por nave (una granja).
+    // Comparativo: por granja (admin con varias) o por nave (una granja), en tabla.
     const varias = isAdmin() && new Set(regs.map(x => x.GranjaID)).size > 1;
     const porNave = !varias && new Set(regs.map(x => x.NaveID).filter(Boolean)).size > 1;
     if (varias || porNave) {
         const clave = varias ? (x => x.GranjaID) : (x => x.NaveID || '—');
-        const nombre = varias ? granjaName : (id => { const n = naveById(id); return n ? `${sectorById(n.SectorID)?.Nombre || ''} / ${n.Nombre}` : '—'; });
+        const nombre = varias ? granjaName : nombreNave;
         const grupo = aggregate(regs, campos, clave);
-        const [real, tabla, titulo] = COMPARATIVO[linea];
-        const cReal = pc(real), cTabla = tabla && pc(tabla);
-        const series = [{ name: 'Real (promedio)', color: PALETTE.primary, data: grupo.map(g => gShow(g, cReal)) }];
-        if (cTabla) series.push({ name: 'Tabla (promedio)', color: PALETTE.secondary, data: grupo.map(g => gShow(g, cTabla)) });
-        html += chartCard(`${linea}-comparativo`, {
-            title: `${titulo}${cReal.peso ? ` (${state.unidad})` : ''} por ${varias ? 'granja' : 'nave'}`, subtitle: rango, icon: varias ? 'warehouse' : 'house',
-            type: 'bar', labels: grupo.map(g => nombre(g.key)), series,
-        });
         html += table('comparativo', {
             title: `Comparativo por ${varias ? 'granja' : 'nave'}`, icon: varias ? 'warehouse' : 'house', csv: `comparativo-${linea}`,
             columns: [{ k: 'nombre', l: varias ? 'Granja' : 'Nave', sticky: true }, { k: 'n', l: 'Registros', t: 'num' }]
@@ -868,6 +863,75 @@ function viewDashboard() {
         rows: grupos.map(g => Object.assign({ key: g.key, n: g.n }, ...campos.map(c => ({ [c.k]: gShow(g, c) })))),
     });
     return html;
+}
+
+function nombreNave(id) {
+    const n = naveById(id);
+    return n ? `${sectorById(n.SectorID)?.Nombre || ''} / ${n.Nombre}` : '—';
+}
+
+/**
+ * Fila de panorama: un medidor con el indicador principal de la línea, una dona (partes de un
+ * total) y barras horizontales que comparan granjas (admin con varias) o naves (una granja).
+ * Cada gráfico mide UNA sola cosa (sin mezclar unidades en un mismo eje).
+ */
+function panorama(linea, regs, campos, tot, rango) {
+    const pc = k => campoDe(linea, k);
+    const tarjetas = [];
+
+    // 1. Medidor
+    let g;
+    if (linea === 'Postura') {
+        const tabla = gAvg(tot, 'PosturaTabla');
+        g = { title: 'Postura promedio', value: round(gAvg(tot, 'PosturaPorcentaje'), 1), max: 100, unit: '%', target: tabla !== null && tabla <= 100 ? round(tabla, 1) : null, targetLabel: 'Tabla', caption: rango };
+    } else if (linea === 'Incubadora') {
+        const inc = gSum(tot, 'HuevoIncubable'), nac = gSum(tot, 'Nacimiento');
+        g = { title: 'Nacimiento sobre huevo incubable', value: inc ? round(nac / inc * 100, 1) : null, max: 100, unit: '%', caption: rango };
+    } else {
+        const v = gAvg(tot, 'PesoCorporalIdealPorcentaje');
+        g = { title: 'Peso corporal frente a la tabla', value: round(v, 1), max: Math.max(120, Math.ceil(((v || 0) * 1.1) / 10) * 10), unit: '%', target: 100, targetLabel: 'Meta (100 % de la tabla)', caption: rango };
+    }
+    tarjetas.push(chartCard(`${linea}-medidor`, { type: 'gauge', icon: 'activity', subtitle: rango, ...g }));
+
+    // 2. Dona
+    let d;
+    if (linea === 'Postura') {
+        const k = ['HuevoPiwi', 'HuevoMediano', 'HuevoGrande', 'HuevoExtragrande'];
+        d = { title: 'Clasificación de huevo', labels: ['Piwi', 'Mediano', 'Grande', 'Extragrande'], values: k.map(x => gSum(tot, x) || 0), colors: [PALETTE.o1, PALETTE.o2, PALETTE.o3, PALETTE.o4], centerLabel: 'huevos' };
+    } else if (linea === 'Incubadora') {
+        const inc = gSum(tot, 'HuevoIncubable') || 0, nac = gSum(tot, 'Nacimiento') || 0;
+        d = { title: 'Huevo incubable: nacidos y no nacidos', labels: ['Nacimiento', 'No nacidos'], values: [nac, Math.max(0, inc - nac)], colors: [PALETTE.primary, PALETTE.tabla], centerLabel: 'huevos incubables' };
+    } else {
+        // Aves actuales por nave (o por granja): último registro de cada una.
+        const porGranja = isAdmin() && new Set(regs.map(x => x.GranjaID)).size > 1;
+        const ult = new Map();
+        regs.forEach((x) => { const k = porGranja ? `${x.GranjaID}|${x.NaveID}` : x.NaveID || x.GranjaID; if (!ult.has(k)) ult.set(k, { x, v: toNum(x.NumeroAves) || 0 }); });
+        const suma = new Map();
+        ult.forEach(({ x, v }) => { const k = porGranja ? granjaName(x.GranjaID) : nombreNave(x.NaveID); suma.set(k, (suma.get(k) || 0) + v); });
+        let filas = [...suma.entries()].sort((a, b) => b[1] - a[1]);
+        if (filas.length > 6) filas = filas.slice(0, 5).concat([['Otras', filas.slice(5).reduce((a, f) => a + f[1], 0)]]);
+        d = { title: `Aves por ${porGranja ? 'granja' : 'nave'} (último registro)`, labels: filas.map(f => f[0]), values: filas.map(f => f[1]),
+            colors: filas.map((f, i) => (f[0] === 'Otras' ? PALETTE.tabla : PALETTE.cat[i])), centerLabel: 'aves' };
+    }
+    tarjetas.push(chartCard(`${linea}-dona`, { type: 'donut', icon: 'chart-column', subtitle: rango, ...d }));
+
+    // 3. Comparativo horizontal (solo si hay más de una granja o nave)
+    const varias = isAdmin() && new Set(regs.map(x => x.GranjaID)).size > 1;
+    const porNave = !varias && new Set(regs.map(x => x.NaveID).filter(Boolean)).size > 1;
+    if (varias || porNave) {
+        const [real, tabla, titulo] = COMPARATIVO[linea];
+        const cReal = pc(real), cTabla = tabla && pc(tabla);
+        const grupo = aggregate(regs, campos, varias ? (x => x.GranjaID) : (x => x.NaveID || '—'))
+            .map(gr => ({ nombre: varias ? granjaName(gr.key) : nombreNave(gr.key), v: gShow(gr, cReal), t: cTabla ? gShow(gr, cTabla) : null }))
+            .sort((a, b) => (b.v ?? -Infinity) - (a.v ?? -Infinity));
+        const unidad = cReal.peso ? state.unidad : linea === 'Postura' || linea === 'Incubadora' ? '%' : '';
+        tarjetas.push(chartCard(`${linea}-comparativo`, {
+            type: 'hbar', title: `${titulo} por ${varias ? 'granja' : 'nave'}`, subtitle: rango, icon: varias ? 'warehouse' : 'house',
+            labels: grupo.map(x => x.nombre), values: grupo.map(x => x.v), unit: unidad,
+            target: cTabla ? grupo.map(x => x.t) : null, valueName: 'Real (promedio)', targetName: 'Tabla (promedio)',
+        }));
+    }
+    return `<div class="grid-3 panorama">${tarjetas.join('')}</div>`;
 }
 
 function viewRegistros() {
@@ -1014,7 +1078,7 @@ function heatmapSpec(lecturas) {
         subtitle: `${semanal ? 'IEC máximo por semana' : 'IEC máximo por día'} · ${fmtDate(desde)} a ${fmtDate(hasta)}`,
         rows: filas.map(f => f[1]), cols: cols.map(etiqueta), values,
         color: v => IEC_COLOR[nivelIec(v)?.color] || '#ccc',
-        legend: state.db.iecRangos.map(x => ({ color: IEC_COLOR[x.color], label: x.nivel })).concat([{ color: 'rgba(107, 132, 163, 0.25)', label: 'Sin lectura' }]),
+        legend: state.db.iecRangos.map(x => ({ color: IEC_COLOR[x.color], label: x.nivel })).concat([{ color: PALETTE.track, label: 'Sin lectura' }]),
         tip: (ri, ci) => {
             const v = values[ri][ci];
             const k = `${filas[ri][0]}|${cols[ci]}`;
@@ -1084,7 +1148,7 @@ function viewGranja(param) {
     }
     const admin = isAdmin();
     let html = '';
-    if (!admin && state.db.granjas.length > 1) html += `<div class="card"><div class="filters">${granjaSwitch()}</div></div>`;
+    if (!admin && state.db.granjas.length > 1) html += `<div class="card filters-card"><div class="filters">${granjaSwitch()}</div></div>`;
 
     const meta = [
         g.Propietario && `<span>${ico('user', 'icon-sm')}${esc(g.Propietario)}</span>`,
@@ -1261,7 +1325,7 @@ function viewBitacora() {
         ? `<label class="field"><span>Granja</span><select data-change="bit-granja"><option value="">Todas</option>${state.db.granjas.map(g =>
             `<option value="${esc(g.GranjaID)}"${state.bitGranja === g.GranjaID ? ' selected' : ''}>${esc(g.NombreGranja)}</option>`).join('')}</select></label>`
         : granjaSwitch();
-    const head = `<div class="card"><div class="filters">${granjaSel}${dateFilters()}</div></div>`;
+    const head = `<div class="card filters-card"><div class="filters">${granjaSel}${dateFilters()}</div></div>`;
     const payload = {
         GranjaID: isAdmin() ? (state.bitGranja || undefined) : state.granjaId,
         desde: state.f.desde || undefined, hasta: state.f.hasta || undefined,
@@ -1290,7 +1354,7 @@ function viewSeguridad() {
         <p class="muted center">Comprueba que nadie haya modificado, borrado o insertado datos directamente en la hoja, fuera de la plataforma.</p>
         <div class="row row-center"><button type="button" class="btn btn-primary" data-action="verify-audit">${ico('shield-check')}Verificar integridad</button></div>
         ${state.audit ? auditHtml(state.audit) : ''}</div>`;
-    const head = `<div class="card"><div class="filters">${dateFilters()}</div></div>`;
+    const head = `<div class="card filters-card"><div class="filters">${dateFilters()}</div></div>`;
     const r = need('getAccesos', { desde: state.f.desde || undefined, hasta: state.f.hasta || undefined });
     html += head;
     if (!r) return html + loadingBlock(1);

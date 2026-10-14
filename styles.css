@@ -1,46 +1,48 @@
 /* ==========================================================================
-   Granjas · Estilos — tema Ocean Breeze, estilo neumórfico
-   Primario #0B3D91 · Secundario #3BA7F2 · Terciario #7FE7D6 · Fondo #E8F6FF
+   Granjas · Estilos — tablero plano tipo Power BI, paleta verde
+   Verde principal #2E7D32 · Verde medio #43A047 · Verde claro #A5D6A7
+   Franja oscura #2E5E2E · Fondo #F1F6F0 · Tarjetas blancas con borde fino
    Regla de espaciado: los contenedores separan a sus hijos con `gap`
    (nunca márgenes sumados), así no aparecen espacios dobles.
    ========================================================================== */
 
 :root {
-    --primary: #0B3D91;
-    --primary-2: #154FB0;
-    --secondary: #3BA7F2;
-    --tertiary: #7FE7D6;
-    --tertiary-ink: #0E7C6B;
-    --bg: #E8F6FF;
-    --surface: #E8F6FF;
-    --surface-2: #F2FAFF;
-    --text: #0F2747;
-    --muted: #5B7290;
-    --line: rgba(11, 61, 145, 0.10);
+    --primary: #2E7D32;
+    --primary-2: #1B5E20;
+    --secondary: #43A047;
+    --tertiary: #A5D6A7;
+    --tertiary-ink: #1B5E20;
+    --band: #2E5E2E;           /* franja oscura: barra superior y filtros */
+    --band-2: #3B7340;
+    --nav-bg: #E6F1E4;         /* menú lateral */
+    --bg: #F1F6F0;
+    --surface: #FFFFFF;
+    --surface-2: #F7FBF6;
+    --text: #1F2D1F;
+    --muted: #5F7362;
+    --line: #D3E4D0;
 
-    --ok: #0E7C6B;
-    --ok-bg: rgba(127, 231, 214, 0.35);
-    --warn: #9A5B00;
-    --warn-bg: rgba(255, 196, 92, 0.28);
+    --ok: #1B5E20;
+    --ok-bg: rgba(102, 187, 106, 0.22);
+    --warn: #8A5300;
+    --warn-bg: rgba(242, 174, 60, 0.24);
     --danger: #B42339;
-    --danger-bg: rgba(229, 72, 98, 0.14);
-    --info-bg: rgba(59, 167, 242, 0.16);
+    --danger-bg: rgba(229, 72, 98, 0.12);
+    --info-bg: rgba(67, 160, 71, 0.12);
 
-    /* Neumorfismo: luz arriba-izquierda, sombra azulada abajo-derecha */
-    --sh-dark: rgba(140, 172, 205, 0.55);
-    --sh-light: rgba(255, 255, 255, 0.95);
-    --raised: 7px 7px 16px var(--sh-dark), -7px -7px 16px var(--sh-light);
-    --raised-sm: 4px 4px 9px var(--sh-dark), -4px -4px 9px var(--sh-light);
-    --inset: inset 4px 4px 9px var(--sh-dark), inset -4px -4px 9px var(--sh-light);
-    --inset-sm: inset 2px 2px 5px var(--sh-dark), inset -2px -2px 5px var(--sh-light);
-    --grad-primary: linear-gradient(135deg, #154FB0 0%, #0B3D91 100%);
-    --grad-secondary: linear-gradient(135deg, #5DB9F6 0%, #2A93DD 100%);
-    --grad-tertiary: linear-gradient(135deg, #A4F0E3 0%, #5AD3BE 100%);
+    /* Estilo plano: bordes finos y sombras muy suaves (los nombres se conservan) */
+    --raised: 0 1px 2px rgba(20, 50, 20, 0.06), 0 0 0 1px var(--line);
+    --raised-sm: 0 0 0 1px var(--line);
+    --inset: inset 0 0 0 1px var(--line);
+    --inset-sm: inset 0 0 0 1px #C3D8BF;
+    --grad-primary: linear-gradient(135deg, #388E3C 0%, #2E7D32 100%);
+    --grad-secondary: linear-gradient(135deg, #66BB6A 0%, #43A047 100%);
+    --grad-tertiary: linear-gradient(135deg, #C8E6C9 0%, #A5D6A7 100%);
 
-    --r-lg: 22px;
-    --r-md: 16px;
-    --r-sm: 12px;
-    --pill: 999px;
+    --r-lg: 8px;
+    --r-md: 8px;
+    --r-sm: 6px;
+    --pill: 6px;
 
     --s1: 4px;
     --s2: 8px;
@@ -49,8 +51,8 @@
     --s5: 24px;
     --s6: 32px;
 
-    --sidebar-w: 256px;
-    --topbar-h: 64px;
+    --sidebar-w: 240px;
+    --topbar-h: 60px;
     --ease: cubic-bezier(.2, .7, .2, 1);
     color-scheme: light;
 }
@@ -494,13 +496,81 @@ details.ficha[open] > summary .icon:last-child { transform: rotate(180deg); }
 @keyframes toastIn { from { opacity: 0; transform: translateY(10px); } }
 
 /* ---------- Responsive ---------- */
+/* ==========================================================================
+   Tablero plano tipo Power BI
+   ========================================================================== */
+.card { border-radius: var(--r-lg); }
+.card-head h2, .card-head h3 { color: var(--primary-2); }
+.chart-card .card-head { padding-bottom: var(--s2); border-bottom: 1px solid var(--line); }
+
+/* Barra superior: franja verde oscuro con título blanco */
+.topbar { background: var(--band); color: #fff; backdrop-filter: none; }
+.page-title { color: #fff; }
+.topbar .icon-btn { background: transparent; color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45); }
+.topbar .icon-btn:hover { background: rgba(255, 255, 255, 0.12); }
+
+/* Menú lateral verde claro; la opción activa, en verde sólido */
+.sidebar { background: var(--nav-bg); box-shadow: 1px 0 0 var(--line); }
+.nav a { color: var(--primary-2); border-radius: var(--r-sm); }
+.nav a:hover { background: #D5E8D1; box-shadow: none; color: var(--primary-2); }
+.nav a.is-active { background: var(--primary); color: #fff; box-shadow: none; }
+.nav a.is-active .icon { color: #fff; }
+.user-chip { background: #fff; }
+
+/* Filtros sobre franja verde, como la barra de segmentadores de Power BI */
+.filters-card { background: var(--band-2); border: 0; box-shadow: none; color: #fff; }
+.filters-card .field > span:first-child, .filters-card .field-label, .filters-card .check { color: #E8F5E9; }
+.filters-card .field input, .filters-card .field select, .filters-card .dropdown > summary {
+    background: #fff; color: var(--text); box-shadow: none; border: 0;
+}
+.filters-card .segmented { background: rgba(255, 255, 255, 0.14); box-shadow: none; }
+.filters-card .seg { color: #E8F5E9; }
+.filters-card .seg:hover:not(:disabled) { color: #fff; }
+.filters-card .seg.is-active { background: #fff; color: var(--primary-2); box-shadow: none; }
+.filters-card .presets .btn { background: rgba(255, 255, 255, 0.14); color: #fff; box-shadow: none; }
+.filters-card .presets .btn:hover { background: rgba(255, 255, 255, 0.24); }
+.filters-card .badge { background: #fff; color: var(--primary-2); }
+.filters-card .check input { accent-color: #A5D6A7; }
+
+/* Tarjetas de indicadores: número grande en verde, etiqueta debajo */
+.kpi { border-top: 4px solid var(--primary); }
+.kpi-icon { width: auto; height: auto; background: none !important; color: var(--secondary) !important; }
+.kpi-value { order: 2; color: var(--primary-2); font-size: 1.8rem; }
+.kpi-label { order: 3; color: var(--primary); }
+.kpi-sub { order: 4; }
+.kpi-icon { order: 1; }
+
+/* Botones y controles */
+.btn { box-shadow: 0 0 0 1px var(--line); }
+.btn-primary, .btn-accent { box-shadow: none; }
+.btn-ghost { box-shadow: none; }
+.segmented { box-shadow: 0 0 0 1px var(--line); background: var(--surface-2); }
+.seg.is-active { background: var(--primary); color: #fff; box-shadow: none; }
+.icon-btn { box-shadow: 0 0 0 1px var(--line); }
+.brand-mark { box-shadow: none; }
+
+/* Tablas: encabezado verde claro */
+.table thead th { background: #E6F1E4; color: var(--primary-2); }
+.table .sticky-col, .table td.actions, .table th.actions { background: #FFFFFF; }
+.table thead .sticky-col, .table thead th.actions { background: #E6F1E4; }
+.table tbody tr:hover td { background: #F1F8EF; }
+.table-wrap { box-shadow: 0 0 0 1px var(--line); }
+
+/* Estructura y fichas */
+.nave { background: var(--surface-2); }
+.pz-bar { background: var(--secondary); }
+.pz-bar.is-full { background: var(--primary-2); }
+.spinner { box-shadow: inset 0 0 0 4px #DCEBD9; border-top-color: var(--primary); }
+.auth-card { box-shadow: 0 1px 3px rgba(20, 50, 20, 0.08), 0 0 0 1px var(--line); }
+.panorama .chart-box canvas { height: 260px; }
+
 @media (max-width: 959px) {
     /* Móvil/tablet: el menú arranca OCULTO y la hamburguesa lo abre y cierra */
     /* Se abre debajo de la barra superior: la misma hamburguesa sigue visible para cerrarlo */
     .sidebar { top: var(--topbar-h); transform: translateX(-105%); visibility: hidden; box-shadow: none; }
     .sidebar > .brand { display: none; }
     .sidebar-backdrop { top: var(--topbar-h); }
-    .topbar { z-index: 45; background: var(--bg); }
+    .topbar { z-index: 45; background: var(--band); }
     .app-shell.sidebar-open .sidebar { transform: none; visibility: visible; box-shadow: 8px 0 28px rgba(15, 39, 71, .25); }
     .app-shell.sidebar-open .sidebar-backdrop { opacity: 1; visibility: visible; }
     .main, .app-shell.sidebar-collapsed .main { margin-left: 0; }
@@ -528,6 +598,8 @@ details.ficha[open] > summary .icon:last-child { transform: rotate(180deg); }
     .filter-group { align-items: stretch; }
     .segmented { display: flex; width: 100%; flex-wrap: nowrap; }
     .seg { flex: 1 1 0; min-width: 0; justify-content: center; padding: 0 10px; }
+    .segmented.seg-lineas { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .seg-lineas .seg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .search input { width: 100%; }
     .table-tools { flex-direction: column; align-items: stretch; text-align: center; }
     .table-tools h2, .table-tools h3 { justify-content: center; }
