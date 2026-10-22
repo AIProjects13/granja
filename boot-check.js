@@ -5,6 +5,13 @@
    app.js marca window.__granjasIniciada = true en cuanto arranca.
    ========================================================================== */
 (function () {
+    // Anti-clickjacking: la plataforma nunca debe mostrarse dentro de otra página.
+    if (window.top !== window.self) {
+        document.documentElement.style.display = 'none';
+        try { window.top.location = window.self.location; } catch (e) { /* bloqueado por el navegador */ }
+        return;
+    }
+
     var loading = document.getElementById('screen-loading');
     var text = document.getElementById('loading-text');
     if (!loading || !text) return;

@@ -78,6 +78,7 @@ const emptyDb = () => ({
     campos: { perfil: [], Reproductora: [], Incubadora: [], Engorde: [], Postura: [] }, tiposLista: [],
     geneticaDe: {}, iecRangos: [], diasRetroactivos: 7, maxMuestra: 1000,
 });
+const filtrosIniciales = () => ({ desde: daysAgo(CONFIG.RANGO_INICIAL_DIAS), hasta: today(), granjas: [], agrupar: 'semana', eliminados: false, sector: '', nave: '' });
 
 const state = {
     user: null,
@@ -86,7 +87,7 @@ const state = {
     busy: 0,
     granjaId: null,          // representante: granja activa (cada granja se trabaja por separado)
     linea: 'Postura',
-    f: { desde: daysAgo(CONFIG.RANGO_INICIAL_DIAS), hasta: today(), granjas: [], agrupar: 'semana', eliminados: false, sector: '', nave: '' },
+    f: filtrosIniciales(),
     unidad: leerPref('granjas.unidad', 'kg'),   // unidad para ver pesos (g, kg, lb)
     cache: new Map(),        // respuestas de lectura (registros, pesajes, bitácora…) por solicitud
     loading: new Set(),
@@ -105,6 +106,8 @@ const charts = {};
 let chartUnmounts = [];
 /** Captura de pesos en curso (modal de pesaje). */
 let pz = null;
+/** Cambia en cada cierre de sesión (ver limpiarSesion). */
+let sesionN = 0;
 
 function leerPref(k, def) {
     try { return localStorage.getItem(k) || def; } catch { return def; }
@@ -260,9 +263,11 @@ function need(action, payload) {
     if (state.cache.has(key)) return state.cache.get(key);
     if (!state.loading.has(key)) {
         state.loading.add(key);
+        const sesion = sesionN;
+        const guardar = (v) => { if (sesion === sesionN) state.cache.set(key, v); };
         withBusy(() => api(action, payload))
-            .then(data => state.cache.set(key, { ok: true, data }))
-            .catch(e => state.cache.set(key, { ok: false, error: e.message, code: e.code }))
+            .then(data => guardar({ ok: true, data }))
+            .catch(e => guardar({ ok: false, error: e.message, code: e.code }))
             .finally(() => { state.loading.delete(key); if (state.me) render(); });
     }
     return null;
@@ -340,6 +345,12 @@ function registrosPayload(extra = {}) {
     };
 }
 function fechaMinima() { return isAdmin() ? '' : daysAgo(state.db.diasRetroactivos || 7); }
+/** El representante edita o elimina solo datos de hasta N días atrás (el servidor lo vuelve a validar). */
+function modificable(fecha) { return isAdmin() || String(fecha || '').slice(0, 10) >= fechaMinima(); }
+function sinPermisoFecha() {
+    const msg = `Solo la administración modifica datos de más de ${state.db.diasRetroactivos} días atrás`;
+    return `<span class="icon-btn icon-btn-sm muted" title="${esc(msg)}" aria-label="${esc(msg)}">${ico('lock')}</span>`;
+}
 
 // ---------- Campos ----------
 const camposDe = linea => state.db.campos[linea] || [];
@@ -966,6 +977,7 @@ function viewRegistros() {
             if (x.Estado !== 'Activo') {
                 return flag + (isAdmin() ? `<button type="button" class="icon-btn icon-btn-sm" data-action="restore-registro" data-id="${esc(x.RegistroID)}" title="Restaurar" aria-label="Restaurar registro">${ico('rotate-ccw')}</button>` : '');
             }
+            if (!modificable(x.Fecha)) return flag + sinPermisoFecha();
             return flag + `<button type="button" class="icon-btn icon-btn-sm" data-action="edit-registro" data-id="${esc(x.RegistroID)}" title="Editar" aria-label="Editar registro">${ico('pencil')}</button>
                 <button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-registro" data-id="${esc(x.RegistroID)}" title="Eliminar" aria-label="Eliminar registro">${ico('trash')}</button>`;
         },
@@ -1005,7 +1017,8 @@ function viewPesajes() {
         empty: 'No hay pesajes en el rango seleccionado.', columns, rows: r.data.pesajes,
         rowClass: x => (x.Estado !== 'Activo' ? 'is-deleted' : ''),
         actions: x => `<button type="button" class="icon-btn icon-btn-sm" data-action="ver-pesaje" data-id="${esc(x.PesajeID)}" title="Ver los pesos" aria-label="Ver los pesos">${ico('list-checks')}</button>`
-            + (x.Estado === 'Activo' ? `<button type="button" class="icon-btn icon-btn-sm" data-action="edit-pesaje" data-id="${esc(x.PesajeID)}" title="Editar" aria-label="Editar pesaje">${ico('pencil')}</button>
+            + (x.Estado === 'Activo' && !modificable(x.Fecha) ? sinPermisoFecha() : '')
+            + (x.Estado === 'Activo' && modificable(x.Fecha) ? `<button type="button" class="icon-btn icon-btn-sm" data-action="edit-pesaje" data-id="${esc(x.PesajeID)}" title="Editar" aria-label="Editar pesaje">${ico('pencil')}</button>
                <button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-pesaje" data-id="${esc(x.PesajeID)}" title="Eliminar" aria-label="Eliminar pesaje">${ico('trash')}</button>` : ''),
     });
 }
@@ -1043,7 +1056,7 @@ function viewAmbiente() {
                 { k: 'Indice', l: 'IEC', t: 'num' }, { k: 'Nivel', l: 'Nivel', html: x => badgeIec(x.Indice, x.Nivel) },
                 { k: 'CreadoPor', l: 'Registrado por' }]),
         rows: lecturas,
-        actions: x => `<button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-lectura" data-id="${esc(x.LecturaID)}" title="Eliminar" aria-label="Eliminar lectura">${ico('trash')}</button>`,
+        actions: x => (!modificable(x.FechaHora) ? sinPermisoFecha() : `<button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-lectura" data-id="${esc(x.LecturaID)}" title="Eliminar" aria-label="Eliminar lectura">${ico('trash')}</button>`),
     });
 }
 
@@ -1374,11 +1387,25 @@ function viewSeguridad() {
 
 const TABLA_LABEL = {
     Usuarios: 'Usuarios', Granjas: 'Granjas', Perfiles: 'Fichas de línea', Listas: 'Listas',
-    Registros_Postura: 'Registros de postura', Registros_Engorde: 'Registros de engorde',
+    Sectores: 'Sectores', Naves: 'Naves', Lotes: 'Lotes', Pesajes: 'Pesajes', Ambiente: 'Lecturas de ambiente',
+    Registros_Reproductora: 'Registros de reproductora', Registros_Incubadora: 'Registros de incubadora',
+    Registros_Engorde: 'Registros de engorde', Registros_Postura: 'Registros de postura',
 };
+/** Una etiqueta por cada acción del servidor (los rechazos de cualquier acción quedan en Accesos). */
 const ACCION_LABEL = {
-    getSnapshot: 'Ingreso', getRegistros: 'Consulta de registros', getResumen: 'Consulta de resumen', getBitacora: 'Consulta de bitácora',
-    saveRegistro: 'Guardar registro', deleteRegistro: 'Eliminar registro', passwordChanged: 'Cambio de contraseña',
+    getSnapshot: 'Ingreso', passwordChanged: 'Cambio de contraseña',
+    getRegistros: 'Consulta de registros', getResumen: 'Consulta de resumen', getBitacora: 'Consulta de bitácora',
+    saveRegistro: 'Guardar registro', deleteRegistro: 'Eliminar registro', restoreRegistro: 'Restaurar registro',
+    getPesajes: 'Consulta de pesajes', savePesaje: 'Guardar pesaje', deletePesaje: 'Eliminar pesaje',
+    getAmbiente: 'Consulta de ambiente', saveLectura: 'Guardar lectura', deleteLectura: 'Eliminar lectura',
+    saveSector: 'Guardar sector', setSectorEstado: 'Activar o desactivar sector', deleteSector: 'Eliminar sector',
+    saveNave: 'Guardar nave', setNaveEstado: 'Activar o desactivar nave', deleteNave: 'Eliminar nave',
+    saveLote: 'Guardar lote', cerrarLote: 'Cerrar lote', reabrirLote: 'Reabrir lote', deleteLote: 'Eliminar lote',
+    saveGranja: 'Guardar granja', setGranjaEstado: 'Suspender o activar granja', deleteGranja: 'Eliminar granja',
+    savePerfil: 'Guardar ficha', deletePerfil: 'Eliminar ficha',
+    saveUser: 'Guardar usuario', setUserEstado: 'Suspender o activar usuario', resetPassword: 'Restablecer contraseña', deleteUser: 'Eliminar usuario',
+    saveLista: 'Guardar valor de lista', deleteLista: 'Quitar valor de lista',
+    getAccesos: 'Consulta de accesos', verifyAudit: 'Verificar integridad',
 };
 const RESULTADO_LABEL = {
     OK: 'Correcto', NOT_REGISTERED: 'Cuenta sin acceso', SUSPENDED: 'Acceso suspendido',
@@ -2067,6 +2094,17 @@ async function deleteUserFlow(u) {
     });
 }
 
+// ---------- Listas ----------
+async function deleteListaFlow(l) {
+    if (!l) return;
+    await openModal({
+        title: `Quitar "${l.Valor}"`, danger: true, submitLabel: 'Quitar',
+        body: `<p class="center">Se quita de la lista <strong>${esc(LISTA_LABEL[l.Tipo] || l.Tipo)}</strong>. Los datos ya guardados no cambian.</p>
+            <p class="muted center">Una línea genética que ya usa algún lote no se puede quitar.</p>${justField()}`,
+        onSubmit: async fd => save('deleteLista', { ListaID: l.ListaID, justificacion: fd.get('justificacion') }, 'Valor eliminado.'),
+    });
+}
+
 // ==========================================================================
 // 12. ACCIONES, AUTENTICACIÓN Y ARRANQUE
 // ==========================================================================
@@ -2188,9 +2226,7 @@ const ACTIONS = {
     },
 
     // Listas
-    'delete-lista': async (el) => {
-        try { await save('deleteLista', { ListaID: el.dataset.id }, 'Valor eliminado.'); } catch (e) { toast(e.message, 'error'); }
-    },
+    'delete-lista': el => deleteListaFlow(state.db.listas.find(l => l.ListaID === el.dataset.id)),
 
     // Seguridad
     'verify-audit': async (el) => {
@@ -2457,6 +2493,33 @@ async function bootSession(forceRefresh = false) {
     }
 }
 
+/**
+ * Al cerrar sesión no queda nada del usuario anterior: ni datos en memoria ni la vista
+ * dibujada (oculta, pero legible en el código de la página en un equipo compartido).
+ */
+function limpiarSesion() {
+    state.me = null;
+    state.db = emptyDb();
+    state.cache.clear();
+    state.audit = null;
+    state.granjaId = null;
+    state.f = filtrosIniciales();
+    state.q = {};
+    state.sort = {};
+    state.bitGranja = '';
+    state.registros = new Map();
+    state.pesajes = new Map();
+    state.lecturas = new Map();
+    pz = null;
+    chartUnmounts.forEach(f => f());
+    chartUnmounts = [];
+    Object.keys(tables).forEach(k => delete tables[k]);
+    Object.keys(charts).forEach(k => delete charts[k]);
+    ['#view', '#nav', '#user-chip', '#page-title'].forEach(s => $(s).replaceChildren());
+    sesionN++;   // una consulta que llegue tarde ya no entra a la caché de la sesión siguiente
+    document.title = 'Granjas · Registro avícola';
+}
+
 // Cierre de sesión automático por inactividad (equipos compartidos).
 let lastActivity = Date.now();
 ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(type =>
@@ -2471,11 +2534,7 @@ onAuthStateChanged(auth, (user) => {
     state.user = user;
     lastActivity = Date.now();
     if (!user) {
-        state.me = null;
-        state.db = emptyDb();
-        state.cache.clear();
-        state.audit = null;
-        state.registros = new Map();
+        limpiarSesion();
         $('#login-form').reset();
         showScreen('login');
         return;
