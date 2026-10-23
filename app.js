@@ -62,7 +62,7 @@ const AGRUPAR = [['dia', 'Día'], ['semana', 'Semana'], ['mes', 'Mes']];
 const UNIDADES = { g: 1, kg: 1000, lb: 453.59237 };
 const UNIDAD_NOMBRE = { g: 'gramos', kg: 'kilogramos', lb: 'libras' };
 /** Colores del índice de estrés calórico (nivel → color). */
-const IEC_COLOR = { verde: '#3FBF7F', amarillo: '#F2C94C', naranja: '#F2994A', rojo: '#E5484D' };
+const IEC_COLOR = { verde: '#3FBF7F', amarillo: '#F2C94C', naranja: '#F2994A', rojo: '#C62828' };
 
 window.__granjasIniciada = true;   // avisa a boot-check.js que la app sí arrancó
 hydrateIcons();
@@ -76,7 +76,7 @@ const auth = initializeAuth(initializeApp(CONFIG.firebase), { persistence: brows
 const emptyDb = () => ({
     granjas: [], perfiles: [], users: [], listas: [], sectores: [], naves: [], lotes: [],
     campos: { perfil: [], Reproductora: [], Incubadora: [], Engorde: [], Postura: [] }, tiposLista: [],
-    geneticaDe: {}, iecRangos: [], diasRetroactivos: 7, maxMuestra: 1000,
+    geneticaDe: {}, iecRangos: [], diasRetroactivos: 7, maxMuestra: 1000, estandares: [], tiposEstandar: [],
 });
 const filtrosIniciales = () => ({ desde: daysAgo(CONFIG.RANGO_INICIAL_DIAS), hasta: today(), granjas: [], agrupar: 'semana', eliminados: false, sector: '', nave: '' });
 
@@ -98,6 +98,10 @@ const state = {
     registros: new Map(),    // RegistroID → registro visible (para las acciones de la tabla)
     pesajes: new Map(),      // PesajeID → pesaje visible
     lecturas: new Map(),     // LecturaID → lectura visible
+    compras: new Map(),      // CompraID → compra de concentrado visible
+    estFilas: new Map(),     // EstandarID → fila de la curva visible
+    estGen: '',              // Pesos estándar: línea genética y tabla elegidas
+    estTipo: 'Comercial',
     bitGranja: '',
 };
 
@@ -134,6 +138,9 @@ function toNum(v) {
     return Number.isFinite(n) ? n : null;
 }
 function fmtNum(v) { const n = toNum(v); return n === null ? '—' : nf.format(n); }
+const nfQ = new Intl.NumberFormat('es-GT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/** Quetzales: "Q 6.50". */
+function fmtQ(v) { const n = toNum(v); return n === null ? '—' : `Q ${nfQ.format(n)}`; }
 function today() { return new Date().toLocaleDateString('en-CA'); }
 function daysAgo(n) { const d = new Date(); d.setDate(d.getDate() - n); return d.toLocaleDateString('en-CA'); }
 function fmtDate(s) {
@@ -322,6 +329,37 @@ const loteActivo = naveId => state.db.lotes.find(l => l.NaveID === naveId && l.E
 function loteEn(naveId, fecha) {
     return lotesDe(naveId).find(l => l.FechaInicio <= fecha && (!l.FechaCierre || l.FechaCierre >= fecha)) || null;
 }
+
+// ---------- Edad de las aves y peso esperado (mismas fórmulas que el servidor) ----------
+/** Edad en días en una fecha: edad al iniciar (semanas) × 7 + días desde el inicio; null sin edad inicial. */
+function edadDias(lote, fecha) {
+    const semanas = toNum(lote?.EdadInicialSemanas);
+    if (semanas === null || !lote.FechaInicio || !fecha) return null;
+    const [a, b] = [lote.FechaInicio, String(fecha).slice(0, 10)].map(s => s.split('-').map(Number));
+    return Math.round(semanas * 7) + Math.round((Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2])) / 86400000);
+}
+const tipoEstandar = linea => (linea === 'Incubadora' ? null : linea === 'Reproductora' ? 'Reproductora' : 'Comercial');
+/** Peso esperado { minimoG, estandarG, maximoG, fuente } por interpolación, o null fuera de la curva. */
+function esperado(genetica, tipo, dias) {
+    if (dias === null || !tipo) return null;
+    const filas = state.db.estandares.filter(x => x.LineaGenetica === genetica && x.Tipo === tipo)
+        .map(x => ({ d: Number(x.EdadDias), min: toNum(x.MinimoG), std: toNum(x.EstandarG), max: toNum(x.MaximoG), fuente: x.Fuente }))
+        .sort((p, q) => p.d - q.d);
+    if (!filas.length || dias < filas[0].d || dias > filas[filas.length - 1].d) return null;
+    let i = 0;
+    while (i < filas.length - 1 && filas[i + 1].d <= dias) i++;
+    const a = filas[i], b = filas[Math.min(i + 1, filas.length - 1)];
+    const f = b.d === a.d ? 0 : (dias - a.d) / (b.d - a.d);
+    const mezcla = k => (a[k] === null || b[k] === null ? null : a[k] + (b[k] - a[k]) * f);
+    return { minimoG: mezcla('min'), estandarG: mezcla('std'), maximoG: mezcla('max'), fuente: f < 0.5 ? a.fuente : b.fuente };
+}
+/** "Semana 23 (día 163)". */
+function textoEdad(dias) { return dias === null ? '' : `Semana ${Math.floor(dias / 7)} (día ${dias})`; }
+/** Insignia del estado del pesaje contra la tabla (con texto, no solo color). */
+function badgeEstadoPeso(estado) {
+    const cls = { Bajo: 'badge-danger', Sobre: 'badge-warn', Dentro: 'badge-ok' }[estado] || 'badge-muted';
+    return estado ? `<span class="badge ${cls}">${esc(estado)}</span>` : '—';
+}
 /** Naves que admiten datos nuevos: nave y sector activos. */
 function navesActivas(granjaId, linea) {
     return sectoresDe(granjaId, linea).filter(s => s.Estado === 'Activo')
@@ -387,7 +425,22 @@ const MESES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'o
 function periodoLabel(key, agrupar) {
     if (agrupar === 'dia') return fmtDate(key).slice(0, 5) + '/' + key.slice(2, 4);
     if (agrupar === 'mes') return `${MESES[Number(key.slice(5, 7)) - 1]} ${key.slice(0, 4)}`;
-    return `${key.slice(5)} ${key.slice(0, 4)}`;
+    if (key.startsWith('E')) return `Semana ${Number(key.slice(1))}`;   // semana de edad del lote
+    return `Sem. ${rangoSemanaIso(key)}`;
+}
+/** Semana de calendario ISO "AAAA-Sww" → "13–19 oct" (o "29 sep–5 oct"). */
+function rangoSemanaIso(key) {
+    const [y, w] = [Number(key.slice(0, 4)), Number(key.slice(6))];
+    const ene4 = new Date(Date.UTC(y, 0, 4));
+    const lunes = new Date(ene4.getTime() + ((w - 1) * 7 - ((ene4.getUTCDay() || 7) - 1)) * 86400000);
+    const domingo = new Date(lunes.getTime() + 6 * 86400000);
+    const d = x => `${x.getUTCDate()} ${MESES[x.getUTCMonth()]}`;
+    return lunes.getUTCMonth() === domingo.getUTCMonth() ? `${lunes.getUTCDate()}–${d(domingo)}` : `${d(lunes)}–${d(domingo)}`;
+}
+/** Clave de semana de un registro: semana de edad de su lote ("E023"), o de calendario si el lote no tiene edad. */
+function claveSemana(r) {
+    const dias = edadDias(loteById(r.LoteID), r.Fecha);
+    return dias === null ? periodo(r.Fecha, 'semana') : `E${String(Math.floor(dias / 7)).padStart(3, '0')}`;
 }
 
 function aggregate(regs, campos, keyFn) {
@@ -419,13 +472,15 @@ function round(v, d = 2) { return v === null || v === undefined ? null : Math.ro
 
 /** Gráficos por línea: [campo, nombre de la serie, color, punteada]. Los pesos usan la unidad elegida. */
 const CHARTS_ZOO = [
-    { id: 'peso', title: 'Peso corporal', icon: 'scale', type: 'area', peso: true, series: [['PesoCorporalReal', 'Peso real (pesaje)', 'primary'], ['PesoCorporalTabla', 'Tabla', 'tabla', true]] },
+    { id: 'peso', title: 'Peso corporal', icon: 'scale', type: 'line', peso: true, banda: true, series: [['PesoCorporalReal', 'Peso real (pesaje)', 'primary'], ['PesoCorporalTabla', 'Estándar de la línea genética', 'tabla', true]] },
     { id: 'conversion', title: 'Conversión alimenticia', icon: 'wheat', type: 'line', series: [['ConversionAlimenticia', 'Conversión (kg alimento / kg ganado)', 'primary']] },
     { id: 'mortalidad', title: 'Mortalidad (%)', icon: 'activity', unit: '%', type: 'line', series: [['MortalidadPorcentaje', 'Mortalidad real', 'primary'], ['MortalidadIdeal', 'Ideal', 'tabla', true]] },
     { id: 'consumo', title: 'Consumo de alimento (g/ave/día)', icon: 'wheat', unit: 'g', type: 'area', series: [['ConsumoGramosAveDia', 'Consumo real', 'primary'], ['ConsumoTabla', 'Tabla', 'tabla', true]] },
     { id: 'iec', title: 'Índice de estrés calórico (máx. del día)', icon: 'thermometer', type: 'line', series: [['IndiceEstresCalorico', 'IEC (°C + % HR)', 'primary']] },
     { id: 'muertes', title: 'Mortalidad (aves)', icon: 'bird', type: 'bar', series: [['MortalidadNominal', 'Mortalidad (aves)', 'primary']] },
 ];
+/** Mínimo y máximo de la tabla de la línea genética (los calcula el servidor en cada registro). */
+const CAMPOS_BANDA = [{ k: 'PesoTablaMinimo', agg: 'promedio', peso: true }, { k: 'PesoTablaMaximo', agg: 'promedio', peso: true }];
 const CHARTS = {
     Reproductora: CHARTS_ZOO,
     Engorde: CHARTS_ZOO,
@@ -595,11 +650,12 @@ function mountCharts() {
 
 const NAV = {
     ADMIN: [['dashboard', 'Dashboard', 'layout-dashboard'], ['registros', 'Registros', 'clipboard-list'],
-        ['pesajes', 'Pesajes', 'scale'], ['ambiente', 'Estrés calórico', 'thermometer'], ['granjas', 'Granjas', 'warehouse'], ['usuarios', 'Usuarios', 'users'], ['listas', 'Listas', 'list'],
+        ['pesajes', 'Pesajes', 'scale'], ['ambiente', 'Estrés calórico', 'thermometer'], ['concentrado', 'Concentrado', 'wheat'],
+        ['granjas', 'Granjas', 'warehouse'], ['usuarios', 'Usuarios', 'users'], ['listas', 'Listas', 'list'], ['estandares', 'Pesos estándar', 'chart-line'],
         ['bitacora', 'Bitácora', 'history'], ['seguridad', 'Seguridad', 'shield-check']],
     REPRESENTANTE: [['granja', 'Mi granja', 'warehouse'], ['dashboard', 'Dashboard', 'layout-dashboard'],
         ['registros', 'Registros', 'clipboard-list'], ['pesajes', 'Pesajes', 'scale'], ['ambiente', 'Estrés calórico', 'thermometer'],
-        ['bitacora', 'Bitácora', 'history']],
+        ['concentrado', 'Concentrado', 'wheat'], ['bitacora', 'Bitácora', 'history']],
 };
 const HOME = { ADMIN: 'dashboard', REPRESENTANTE: 'granja' };
 const A = [ROLES.ADMIN], ALL = [ROLES.ADMIN, ROLES.REPRESENTANTE];
@@ -608,6 +664,8 @@ const VIEWS = {
     registros: { roles: ALL, title: 'Registros diarios', render: viewRegistros },
     pesajes: { roles: ALL, title: 'Pesajes por muestra', render: viewPesajes },
     ambiente: { roles: ALL, title: 'Estrés calórico', render: viewAmbiente },
+    concentrado: { roles: ALL, title: 'Compras de concentrado', render: viewConcentrado },
+    estandares: { roles: A, title: 'Pesos estándar por línea genética', render: viewEstandares },
     granja: { roles: ALL, title: 'Granja', render: viewGranja },
     granjas: { roles: A, title: 'Granjas', render: viewGranjas },
     usuarios: { roles: A, title: 'Usuarios', render: viewUsuarios },
@@ -836,7 +894,8 @@ function viewDashboard() {
     html += panorama(linea, regs, campos, tot, rango);
 
     // Tendencias por periodo
-    const grupos = aggregate(regs, campos, x => periodo(x.Fecha, agr));
+    // Por semana: semana de EDAD del lote ("Semana 23"); día y mes, de calendario.
+    const grupos = aggregate(regs, campos.concat(CAMPOS_BANDA), x => (agr === 'semana' ? claveSemana(x) : periodo(x.Fecha, agr)));
     const labels = grupos.map(g => periodoLabel(g.key, agr));
     const sub = `${contexto} · ${rango} · por ${AGRUPAR.find(a => a[0] === agr)[1].toLowerCase()}`;
     html += '<div class="grid-2">' + CHARTS[linea].map((def) => {
@@ -848,6 +907,11 @@ function viewDashboard() {
                 data: grupos.map(g => { const c = pc(key); return c ? gShow(g, c) : null; }),
             })),
         };
+        // Banda mín–máx de la tabla de la línea genética (solo si hay datos).
+        if (def.banda) {
+            const lo = grupos.map(g => gShow(g, CAMPOS_BANDA[0])), hi = grupos.map(g => gShow(g, CAMPOS_BANDA[1]));
+            if (lo.some(v => v !== null)) spec.band = { name: 'Rango de la tabla', lo, hi, color: PALETTE.tabla };
+        }
         return chartCard(`${linea}-${def.id}`, spec);
     }).join('') + '</div>';
 
@@ -961,7 +1025,11 @@ function viewRegistros() {
     state.registros = new Map(r.data.registros.map(x => [x.RegistroID, x]));
     const columns = [{ k: 'Fecha', l: 'Fecha', t: 'date', sticky: true }]
         .concat(colsGranja(), COLS_UBICACION, [{ k: 'LineaGenetica', l: 'Línea genética' }])
-        .concat(camposDe(linea).map(colCampo))
+        .concat(camposDe(linea).map(c => (c.k !== 'PesoCorporalTabla' ? colCampo(c) : {
+            // Peso tabla: de la línea genética; "manual" si es un valor escrito antes de esta versión.
+            ...colCampo(c), csv: x => enUnidad(x.PesoCorporalTabla),
+            html: x => `${fmtNum(round(enUnidad(x.PesoCorporalTabla), decimalesPeso()))}${x.PesoCorporalTablaOrigen === 'Manual' ? ' <span class="badge badge-muted" title="Escrito a mano antes de usar la tabla de la línea genética">manual</span>' : ''}`,
+        })))
         .concat(isAdmin() && state.f.eliminados ? [{ k: 'Estado', l: 'Estado', html: x => badgeEstado(x.Estado === 'Activo' ? 'Activo' : 'Eliminado') }] : [])
         .concat([{ k: 'CreadoPor', l: 'Registrado por' }, { k: 'ActualizadoEn', l: 'Última edición', t: 'datetime' }]);
 
@@ -1007,7 +1075,15 @@ function viewPesajes() {
             pesoCol('PromedioG', 'Promedio'), pesoCol('MinimoG', 'Mínimo'), pesoCol('MaximoG', 'Máximo'),
             { k: 'CV', l: 'CV (%)', t: 'num' }, { k: 'Uniformidad', l: 'Uniformidad (%)', t: 'num' },
         ])
-        .concat(linea === 'Incubadora' ? [] : [{ k: 'ConversionAlimenticia', l: 'Conversión alimenticia', t: 'num' }])
+        .concat(linea === 'Incubadora' ? [] : [
+            // Comparación con la curva de la línea genética a la edad de las aves.
+            { k: 'SemanaEdad', l: 'Semana de edad', t: 'num' },
+            pesoCol('EsperadoG', 'Esperado'),
+            { k: 'DiferenciaG', l: `Diferencia (${state.unidad})`, t: 'num', get: x => round(enUnidad(x.DiferenciaG), decimalesPeso()) },
+            { k: 'DiferenciaPct', l: 'Diferencia (%)', t: 'num' },
+            { k: 'EstadoPeso', l: 'Contra la tabla', html: x => badgeEstadoPeso(x.EstadoPeso) },
+            { k: 'ConversionAlimenticia', l: 'Conversión alimenticia', t: 'num' },
+        ])
         .concat([{ k: 'Unidad', l: 'Capturado en' }, { k: 'Pesos', l: 'Pesos individuales', nocsv: false, wrap: true, html: x => `<span class="muted">${esc(String(x.Pesos || '').split(',').length)} pesos</span>` },
             { k: 'CreadoPor', l: 'Registrado por' }])
         .concat(isAdmin() && state.f.eliminados ? [{ k: 'Estado', l: 'Estado', html: x => badgeEstado(x.Estado === 'Activo' ? 'Activo' : 'Eliminado') }] : []);
@@ -1095,7 +1171,7 @@ function heatmapSpec(lecturas) {
         tip: (ri, ci) => {
             const v = values[ri][ci];
             const k = `${filas[ri][0]}|${cols[ci]}`;
-            return [filas[ri][1], `${semanal ? 'Semana ' + periodoLabel(cols[ci], 'semana') : fmtDate(cols[ci])}`,
+            return [filas[ri][1], `${semanal ? 'Semana del ' + rangoSemanaIso(cols[ci]) : fmtDate(cols[ci])}`,
                 v === null ? 'Sin lectura' : `IEC máximo ${fmtNum(v)} · ${nivelIec(v)?.nivel || ''}`, v === null ? '' : `${cuenta[k]} lectura(s)`].filter(Boolean);
         },
     };
@@ -1266,8 +1342,13 @@ function naveCard(n) {
     const lote = loteActivo(n.NaveID);
     const historial = lotesDe(n.NaveID).filter(l => l.Estado !== 'Activo');
     const tieneLotes = lotesDe(n.NaveID).length > 0;
+    const dias = lote ? edadDias(lote, today()) : null;
+    const costo = lote ? toNum(lote.CostoPorAve) : null;
+    const total = costo !== null && toNum(lote.AvesIniciales) ? costo * toNum(lote.AvesIniciales) : null;
     const loteHtml = lote
-        ? `<div class="lote">${ico('tag', 'icon-sm')}<span><strong>Lote ${esc(lote.NumeroLote)}</strong> · ${esc(lote.LineaGenetica)}<br><span class="muted">Desde ${esc(fmtDate(lote.FechaInicio))}${lote.AvesIniciales ? ` · ${esc(fmtNum(lote.AvesIniciales))} aves` : ''}</span></span></div>`
+        ? `<div class="lote">${ico('tag', 'icon-sm')}<span><strong>Lote ${esc(lote.NumeroLote)}</strong> · ${esc(lote.LineaGenetica)}<br><span class="muted">Desde ${esc(fmtDate(lote.FechaInicio))}${lote.AvesIniciales ? ` · ${esc(fmtNum(lote.AvesIniciales))} aves` : ''}</span>
+            ${dias !== null ? `<br><span class="muted">Hoy: ${esc(textoEdad(dias))}</span>` : `<br><span class="muted">${n.Linea === 'Incubadora' ? '' : 'Sin edad inicial: edita el lote para comparar con la tabla.'}</span>`}
+            ${costo !== null ? `<br><span class="muted">${esc(fmtQ(costo))} por ave${total !== null ? ` · ${esc(fmtQ(total))} el lote` : ''}</span>` : ''}</span></div>`
         : '<div class="lote muted">Sin lote activo</div>';
     return `<div class="nave${activa ? '' : ' is-inactive'}">
         <div class="nave-head"><strong>${ico('house', 'icon-sm')}${esc(n.Nombre)}</strong>${activa ? '' : badgeEstado('Inactivo')}</div>
@@ -1385,11 +1466,103 @@ function viewSeguridad() {
     });
 }
 
+/**
+ * Compras de concentrado: registro aparte (no toca lotes, naves ni cálculos). El representante ve
+ * su granja; el admin una, varias o todas, con el costo promedio por quintal ponderado.
+ */
+function viewConcentrado() {
+    const ids = ctxIds();
+    if (!ids.length) return noGranjas();
+    const head = filtersCard({ lineas: false });
+    const nueva = `<div class="section-head"><p class="muted">Cada compra guarda cuánto se compró, cuánto costó y qué fechas cubre. Por ahora es un registro aparte: no cambia ningún otro cálculo.</p>
+        <button type="button" class="btn btn-primary" data-action="new-compra">${ico('plus')}Nueva compra</button></div>`;
+    const r = need('getConcentrado', { GranjaIDs: apiGranjas(), desde: state.f.desde || undefined, hasta: state.f.hasta || undefined });
+    if (!r) return head + nueva + loadingBlock(1);
+    if (!r.ok) return head + nueva + errorBlock(r);
+    const { compras, totales, porGranja } = r.data;
+    state.compras = new Map(compras.map(c => [c.CompraID, c]));
+    let html = head + nueva + `<div class="kpis">
+        ${kpi('Compras', nf.format(compras.length), state.f.desde || state.f.hasta ? `${fmtDate(state.f.desde) || 'inicio'} a ${fmtDate(state.f.hasta) || 'hoy'}` : 'Todo el historial', 'clipboard-list')}
+        ${kpi('Quintales comprados', `${fmtNum(totales.quintales)} qq`, '', 'wheat')}
+        ${kpi('Costo total', fmtQ(totales.costo), '', 'file-spreadsheet')}
+        ${kpi('Costo promedio', totales.costoPorQuintal ? `${fmtQ(totales.costoPorQuintal)} / qq` : '—', 'Ponderado por cantidad', 'scale')}</div>`;
+    if (isAdmin() && porGranja.length > 1) {
+        html += table('concentrado-granjas', {
+            title: 'Por granja', icon: 'warehouse', csv: 'concentrado-por-granja',
+            columns: [{ k: 'GranjaID', l: 'Granja', sticky: true, get: g => granjaName(g.GranjaID) }, { k: 'quintales', l: 'Quintales', t: 'num' },
+                { k: 'costo', l: 'Costo total (Q)', t: 'num' }, { k: 'costoPorQuintal', l: 'Costo por quintal (Q)', t: 'num' }],
+            rows: porGranja,
+        });
+    }
+    return html + table('compras', {
+        title: 'Compras de concentrado', icon: 'wheat', csv: 'compras-concentrado',
+        empty: 'No hay compras en el rango seleccionado.',
+        columns: [{ k: 'Desde', l: 'Desde', t: 'date', sticky: true }, { k: 'Hasta', l: 'Hasta', t: 'date' }].concat(colsGranja(), [
+            { k: 'CantidadQuintales', l: 'Cantidad (qq)', t: 'num' }, { k: 'CostoTotal', l: 'Costo total (Q)', t: 'num' },
+            { k: 'CostoPorQuintal', l: 'Costo por quintal (Q)', t: 'num' }, { k: 'Comentarios', l: 'Comentarios', wrap: true },
+            { k: 'CreadoPor', l: 'Registrado por' }, { k: 'CreadoEn', l: 'Registrado el', t: 'datetime' }]),
+        rows: compras,
+        actions: c => (!modificable(c.CreadoEn) ? sinPermisoFecha()
+            : `<button type="button" class="icon-btn icon-btn-sm" data-action="edit-compra" data-id="${esc(c.CompraID)}" title="Editar" aria-label="Editar compra">${ico('pencil')}</button>
+               <button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-compra" data-id="${esc(c.CompraID)}" title="Eliminar" aria-label="Eliminar compra">${ico('trash')}</button>`),
+    });
+}
+
+/** Pesos estándar (admin): curva de cada línea genética por edad, con su fuente; se puede corregir. */
+function viewEstandares() {
+    const r = need('getEstandares', {});
+    if (!r) return loadingBlock(2);
+    if (!r.ok) return errorBlock(r);
+    const filas = r.data.estandares;
+    const tiposGen = new Set(Object.values(state.db.geneticaDe || {}).flat());
+    const geneticas = [...new Set(state.db.listas.filter(l => tiposGen.has(l.Tipo)).map(l => l.Valor))].sort((a, b) => a.localeCompare(b, 'es', { numeric: true }));
+    const tipos = state.db.tiposEstandar?.length ? state.db.tiposEstandar : ['Comercial', 'Reproductora'];
+    const conTabla = new Set(filas.map(x => `${x.LineaGenetica}|${x.Tipo}`));
+    if (!state.estGen || !geneticas.includes(state.estGen)) state.estGen = geneticas.find(g => conTabla.has(`${g}|Comercial`)) || geneticas[0] || '';
+    if (!tipos.includes(state.estTipo)) state.estTipo = 'Comercial';
+    const curva = filas.filter(x => x.LineaGenetica === state.estGen && x.Tipo === state.estTipo);
+    state.estFilas = new Map(curva.map(x => [x.EstandarID, x]));
+    const cobertura = geneticas.map(g => `<span class="chip">${esc(g)} ${tipos.map(t => `<span class="badge ${conTabla.has(`${g}|${t}`) ? 'badge-ok' : 'badge-muted'}" title="${esc(t)}">${esc(t === 'Comercial' ? 'C' : 'R')}${conTabla.has(`${g}|${t}`) ? '' : ' —'}</span>`).join(' ')}</span>`).join('');
+    const filtros = `<div class="card filters-card"><div class="filters">
+        <label class="field"><span>Línea genética</span><select data-change="est-gen">${geneticas.map(g => `<option${g === state.estGen ? ' selected' : ''}>${esc(g)}</option>`).join('')}</select></label>
+        <div class="filter-group"><span class="field-label">Tabla</span><div class="segmented" role="group" aria-label="Tabla">${tipos.map(t =>
+        `<button type="button" class="seg${t === state.estTipo ? ' is-active' : ''}" data-action="est-tipo" data-tipo="${esc(t)}" aria-pressed="${t === state.estTipo}">${esc(t === 'Comercial' ? 'Comercial (postura y engorde)' : 'Hembra reproductora')}</button>`).join('')}</div></div>
+    </div></div>`;
+    let html = filtros + `<div class="section-head"><p class="muted">Peso esperado por edad, tomado de la guía oficial de cada casa genética. Con esta tabla se juzga cada pesaje. Corrige una fila solo si la guía cambió (pide justificación y queda en la bitácora).</p>
+        <button type="button" class="btn btn-primary" data-action="new-estandar">${ico('plus')}Agregar edad</button></div>`;
+    if (!curva.length) {
+        html += emptyState(`${state.estGen} no tiene tabla ${state.estTipo === 'Comercial' ? 'comercial' : 'de hembra reproductora'}. Sus pesajes quedan "Sin tabla" hasta que se cargue una guía oficial.`, 'chart-line');
+    } else {
+        const semanal = curva.length > 2 && Number(curva[1].EdadDias) - Number(curva[0].EdadDias) >= 7;
+        const etq = x => (semanal ? `Sem. ${Math.round(Number(x.EdadDias) / 7)}` : `Día ${x.EdadDias}`);
+        const spec = {
+            title: `${state.estGen} · ${state.estTipo === 'Comercial' ? 'comercial' : 'hembra reproductora'} (${state.unidad})`, subtitle: curva[0].Fuente, icon: 'chart-line', type: 'line', unit: state.unidad,
+            labels: curva.map(etq),
+            series: [{ name: 'Estándar', color: PALETTE.primary, data: curva.map(x => round(enUnidad(x.EstandarG), decimalesPeso())) }],
+        };
+        if (curva.some(x => x.MinimoG !== '')) {
+            spec.band = { name: 'Rango mín–máx', color: PALETTE.tabla, lo: curva.map(x => (x.MinimoG === '' ? null : round(enUnidad(x.MinimoG), decimalesPeso()))), hi: curva.map(x => (x.MaximoG === '' ? null : round(enUnidad(x.MaximoG), decimalesPeso()))) };
+        }
+        html += chartCard('estandar', spec) + table('estandares', {
+            title: 'Tabla de pesos', icon: 'table', csv: `pesos-estandar-${state.estGen}-${state.estTipo}`,
+            columns: [{ k: 'EdadDias', l: 'Edad (días)', t: 'num', sticky: true }, { k: 'semana', l: 'Semana', t: 'num', get: x => Math.floor(Number(x.EdadDias) / 7) },
+                { k: 'MinimoG', l: 'Mínimo (g)', t: 'num' }, { k: 'EstandarG', l: 'Estándar (g)', t: 'num' }, { k: 'MaximoG', l: 'Máximo (g)', t: 'num' },
+                { k: 'Fuente', l: 'Fuente', wrap: true, html: x => `${esc(x.Fuente)}${x.Alterado ? ` <span class="badge badge-danger" title="Modificada fuera de la plataforma">${ico('lock', 'icon-sm')}</span>` : ''}` }],
+            rows: curva,
+            actions: x => `<button type="button" class="icon-btn icon-btn-sm" data-action="edit-estandar" data-id="${esc(x.EstandarID)}" title="Corregir" aria-label="Corregir fila">${ico('pencil')}</button>
+                <button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-estandar" data-id="${esc(x.EstandarID)}" title="Borrar" aria-label="Borrar fila">${ico('trash')}</button>`,
+        });
+    }
+    return html + `<div class="card"><div class="card-head card-title-center"><h3>${ico('list-checks')}Cobertura de las líneas genéticas</h3></div>
+        <p class="muted center">C = tabla comercial · R = hembra reproductora · "—" = sin guía oficial cargada.</p><div class="chips">${cobertura}</div></div>`;
+}
+
 const TABLA_LABEL = {
     Usuarios: 'Usuarios', Granjas: 'Granjas', Perfiles: 'Fichas de línea', Listas: 'Listas',
     Sectores: 'Sectores', Naves: 'Naves', Lotes: 'Lotes', Pesajes: 'Pesajes', Ambiente: 'Lecturas de ambiente',
     Registros_Reproductora: 'Registros de reproductora', Registros_Incubadora: 'Registros de incubadora',
     Registros_Engorde: 'Registros de engorde', Registros_Postura: 'Registros de postura',
+    PesosEstandar: 'Pesos estándar', Concentrado: 'Compras de concentrado',
 };
 /** Una etiqueta por cada acción del servidor (los rechazos de cualquier acción quedan en Accesos). */
 const ACCION_LABEL = {
@@ -1406,6 +1579,8 @@ const ACCION_LABEL = {
     saveUser: 'Guardar usuario', setUserEstado: 'Suspender o activar usuario', resetPassword: 'Restablecer contraseña', deleteUser: 'Eliminar usuario',
     saveLista: 'Guardar valor de lista', deleteLista: 'Quitar valor de lista',
     getAccesos: 'Consulta de accesos', verifyAudit: 'Verificar integridad',
+    getEstandares: 'Consulta de pesos estándar', saveEstandar: 'Guardar peso estándar', deleteEstandar: 'Borrar peso estándar',
+    getConcentrado: 'Consulta de concentrado', saveCompra: 'Guardar compra de concentrado', deleteCompra: 'Eliminar compra de concentrado',
 };
 const RESULTADO_LABEL = {
     OK: 'Correcto', NOT_REGISTERED: 'Cuenta sin acceso', SUSPENDED: 'Acceso suspendido',
@@ -1569,9 +1744,41 @@ function infoUbicacion(naveId, fecha) {
     const n = naveById(naveId);
     if (!n) return '';
     const l = loteEn(naveId, fecha);
-    return l
-        ? `<div class="alert alert-info">${ico('tag')}<span>Lote <strong>${esc(l.NumeroLote)}</strong> · ${esc(l.LineaGenetica)} · desde ${esc(fmtDate(l.FechaInicio))}</span></div>`
-        : `<div class="alert alert-warn">${ico('alert-triangle')}<span>${esc(n.Nombre)} no tenía un lote activo el ${esc(fmtDate(fecha))}. Inicia el lote en la vista de la granja.</span></div>`;
+    if (!l) return `<div class="alert alert-warn">${ico('alert-triangle')}<span>${esc(n.Nombre)} no tenía un lote activo el ${esc(fmtDate(fecha))}. Inicia el lote en la vista de la granja.</span></div>`;
+    const dias = edadDias(l, fecha);
+    const tipo = tipoEstandar(n.Linea);
+    const esp = esperado(l.LineaGenetica, tipo, dias);
+    let extra = '';
+    if (tipo && dias === null) extra = '<br>El lote no tiene edad inicial: edítalo para comparar con la tabla de su línea genética.';
+    else if (tipo) {
+        extra = `<br>Edad: <strong>${esc(textoEdad(dias))}</strong>` + (esp
+            ? ` · Peso esperado (${esc(l.LineaGenetica)}): <strong>${esc(fmtPeso(esp.estandarG))}</strong>${esp.minimoG !== null ? ` (rango ${esc(fmtPeso(esp.minimoG))} – ${esc(fmtPeso(esp.maximoG))})` : ''}`
+            : ` · Sin tabla de peso de ${esc(l.LineaGenetica)} para esta edad.`);
+    }
+    return `<div class="alert alert-info">${ico('tag')}<span>Lote <strong>${esc(l.NumeroLote)}</strong> · ${esc(l.LineaGenetica)} · desde ${esc(fmtDate(l.FechaInicio))}${extra}</span></div>`;
+}
+/** Peso esperado (g) de la nave en esa fecha, según la línea genética de su lote y la edad. */
+function esperadoPesaje(naveId, fecha) {
+    const n = naveById(naveId);
+    const l = n && loteEn(naveId, fecha);
+    return l ? esperado(l.LineaGenetica, tipoEstandar(n.Linea), edadDias(l, fecha)) : null;
+}
+/** Estado del promedio (g) contra el rango: igual que el servidor. */
+function estadoPeso(promG, esp) {
+    if (!esp) return 'Sin tabla';
+    if (esp.minimoG === null || esp.maximoG === null) return 'Sin rango';
+    return promG < esp.minimoG ? 'Bajo' : promG > esp.maximoG ? 'Sobre' : 'Dentro';
+}
+/** Registro: si el lote tiene edad inicial, "Edad (semanas)" se calcula y no se escribe. */
+function syncEdadRegistro(form, lote, fecha) {
+    const input = form?.elements.EdadSemanas;
+    if (!input) return;
+    const dias = edadDias(lote, fecha);
+    input.readOnly = dias !== null;
+    if (dias !== null) input.value = String(round(dias / 7, 1));
+    else if (input.dataset.auto) input.value = '';
+    input.dataset.auto = dias !== null ? '1' : '';
+    input.title = dias !== null ? 'Se calcula con la edad del lote' : '';
 }
 
 // ---------- Registros ----------
@@ -1605,7 +1812,7 @@ async function openRegistroModal(reg = null) {
         ${calculados.length ? alertBox('info', 'info', `Se calculan automáticamente: ${calculados.map(c => esc(c.l)).join(', ')}.`) : ''}
         ${reg ? `<section class="form-section">${justField('Explica qué se corrige y por qué.')}</section>` : ''}`;
 
-    await openModal({
+    const promesa = openModal({
         title: reg ? `Editar registro de ${linea.toLowerCase()}` : `Nuevo registro de ${linea.toLowerCase()}`,
         wide: true, body, submitLabel: reg ? 'Guardar cambios' : 'Guardar registro',
         onSubmit: async (fd) => {
@@ -1619,6 +1826,10 @@ async function openRegistroModal(reg = null) {
             await save('saveRegistro', payload, reg ? 'Registro actualizado.' : 'Registro guardado.', { snapshot: false });
         },
     });
+    const form = $('#modal form');
+    if (reg) syncEdadRegistro(form, loteById(reg.LoteID), reg.Fecha);
+    else if (form) syncEdadRegistro(form, loteEn(form.NaveID.value, form.Fecha.value), form.Fecha.value);
+    await promesa;
 }
 
 function unidadSelect(name, actual) {
@@ -1680,10 +1891,20 @@ function pzRender() {
     input.disabled = n >= total;
     const st = statsMuestra(pz.pesos);
     const f = v => new Intl.NumberFormat('es-GT', { maximumFractionDigits: pz.unidad === 'g' ? 1 : 3 }).format(v);
+    // Comparación en vivo con el peso esperado de la línea genética (en la unidad de captura).
+    const esp = pz.tipo === 'huevo' ? null : pz.esperado;
+    const promG = st ? st.prom * factorDe(pz.unidad) : null;
+    const comparacion = st && esp ? (() => {
+        const dif = promG - esp.estandarG;
+        const estado = estadoPeso(promG, esp);
+        return `<div><dt>Esperado</dt><dd>${esc(fmtPeso(esp.estandarG, pz.unidad))}</dd></div>
+            <div><dt>Diferencia</dt><dd>${esc(`${dif >= 0 ? '+' : ''}${fmtPeso(dif, pz.unidad)} (${dif >= 0 ? '+' : ''}${fmtNum(dif / esp.estandarG * 100)} %)`)}</dd></div>
+            <div><dt>Estado</dt><dd>${badgeEstadoPeso(estado)}</dd></div>`;
+    })() : '';
     box.querySelector('[data-pz-stats]').innerHTML = st
         ? [['Promedio', `${f(st.prom)} ${pz.unidad}`], ['Mínimo', `${f(st.min)} ${pz.unidad}`], ['Máximo', `${f(st.max)} ${pz.unidad}`], ['CV', `${fmtNum(st.cv)} %`], ['Uniformidad', `${fmtNum(st.unif)} %`]]
-            .map(([l, v]) => `<div><dt>${esc(l)}</dt><dd>${esc(v)}</dd></div>`).join('')
-        : '<p class="muted center">Ingresa el primer peso.</p>';
+            .map(([l, v]) => `<div><dt>${esc(l)}</dt><dd>${esc(v)}</dd></div>`).join('') + comparacion
+        : `<p class="muted center">Ingresa el primer peso.${esp ? ` Peso esperado: ${esc(fmtPeso(esp.estandarG, pz.unidad))}${esp.minimoG !== null ? ` (rango ${esc(fmtPeso(esp.minimoG, pz.unidad))} – ${esc(fmtPeso(esp.maximoG, pz.unidad))})` : ''}.` : ''}</p>`;
     box.querySelector('[data-pz-list]').innerHTML = pz.pesos.map((v, i) =>
         `<li><span class="pz-num">${i + 1}</span>${esc(f(v))}<button type="button" class="icon-btn icon-btn-sm danger" data-action="pz-del" data-i="${i}" aria-label="Quitar el peso ${i + 1}" title="Quitar">${ico('x')}</button></li>`).join('');
     const excedente = n > total;
@@ -1766,7 +1987,11 @@ async function openPesajeModal(pes = null) {
         },
     });
     const form = $('#modal form');
-    if (!pes && form) { pz.naveId = form.NaveID.value; pz.fecha = form.Fecha.value; }
+    if (!pes && form) { pz.naveId = form.NaveID.value; pz.fecha = form.Fecha.value; pz.esperado = esperadoPesaje(pz.naveId, pz.fecha); }
+    if (pes) {
+        const l = loteById(pes.LoteID);
+        pz.esperado = l ? esperado(l.LineaGenetica, tipoEstandar(pes.Linea), edadDias(l, pes.Fecha)) : null;
+    }
     pzRender();
     $('#pz-input')?.focus();
     await promesa;
@@ -1889,6 +2114,8 @@ function geneticaSelect(linea, actual = '') {
 
 async function openLoteModal(naveId, lote = null) {
     const n = naveById(naveId || lote?.NaveID);
+    // Al iniciar es obligatoria (salvo Incubadora, que pesa huevos); un lote anterior se edita sin ella.
+    const edadObligatoria = !lote && n?.Linea !== 'Incubadora';
     await openModal({
         title: lote ? `Editar lote ${lote.NumeroLote}` : `Iniciar lote en ${n?.Nombre || ''}`,
         body: `<div class="form-grid">
@@ -1896,6 +2123,9 @@ async function openLoteModal(naveId, lote = null) {
             <label class="field"><span>Línea genética <span class="req">*</span></span>${geneticaSelect(n.Linea, lote?.LineaGenetica)}</label>
             <label class="field"><span>Fecha de inicio <span class="req">*</span></span><input type="date" name="FechaInicio" required max="${today()}" value="${esc(lote?.FechaInicio || today())}"></label>
             <label class="field"><span>Aves iniciales</span><input type="number" name="AvesIniciales" min="0" step="1" inputmode="numeric" value="${esc(lote?.AvesIniciales || '')}"></label>
+            <label class="field"><span>Edad de las aves al iniciar (semanas)${edadObligatoria ? ' <span class="req">*</span>' : ''}</span><input type="number" name="EdadInicialSemanas" min="0" max="200" step="any" inputmode="decimal" value="${esc(lote?.EdadInicialSemanas ?? '')}"${edadObligatoria ? ' required' : ''}>
+                <small class="field-hint">0 si son pollitos de un día; por ejemplo 17 si llegan pollas a postura. Con ella se calcula la edad de cada pesaje.</small></label>
+            <label class="field"><span>Costo por ave (Q)${lote ? '' : ' <span class="req">*</span>'}</span><input type="number" name="CostoPorAve" min="0" max="100000" step="0.01" inputmode="decimal" value="${esc(lote?.CostoPorAve ?? '')}"${lote ? '' : ' required'}></label>
             ${lote ? justField('Si cambias el número de lote o la línea genética, se actualizan también sus registros y pesajes.') : ''}
         </div>
         ${lote ? '' : '<p class="muted center">La nave solo puede tener un lote activo. Ciérralo cuando termine para iniciar el siguiente.</p>'}`,
@@ -2094,6 +2324,78 @@ async function deleteUserFlow(u) {
     });
 }
 
+// ---------- Compras de concentrado ----------
+async function openCompraModal(c = null) {
+    const granjas = isAdmin() ? state.db.granjas.filter(g => g.Estado === 'Activo') : state.db.granjas.filter(g => g.GranjaID === state.granjaId);
+    if (!c && !granjas.length) return toast('No hay granjas activas donde registrar la compra.', 'error');
+    const pre = c?.GranjaID || (isAdmin() && state.f.granjas.length === 1 ? state.f.granjas[0] : granjas[0]?.GranjaID);
+    const granjaHtml = c
+        ? `<label class="field"><span>Granja</span><input value="${esc(granjaName(c.GranjaID))}" readonly></label>`
+        : `<label class="field"><span>Granja <span class="req">*</span></span><select name="GranjaID" required${granjas.length === 1 ? ' disabled' : ''}>${granjas.map(g => `<option value="${esc(g.GranjaID)}"${g.GranjaID === pre ? ' selected' : ''}>${esc(g.NombreGranja)}</option>`).join('')}</select>
+            ${granjas.length === 1 ? `<input type="hidden" name="GranjaID" value="${esc(granjas[0].GranjaID)}">` : ''}</label>`;
+    await openModal({
+        title: c ? 'Editar compra de concentrado' : 'Nueva compra de concentrado', wide: true,
+        body: `<div class="form-grid">${granjaHtml}
+            <label class="field"><span>Cubre desde <span class="req">*</span></span><input type="date" name="Desde" required max="${today()}" value="${esc(c?.Desde || today())}"></label>
+            <label class="field"><span>Cubre hasta <span class="req">*</span></span><input type="date" name="Hasta" required value="${esc(c?.Hasta || '')}"></label>
+            <label class="field"><span>Cantidad comprada (quintales) <span class="req">*</span></span><input type="number" name="CantidadQuintales" required min="0.01" step="any" inputmode="decimal" value="${esc(c?.CantidadQuintales || '')}" data-input="compra-calc"></label>
+            <label class="field"><span>Costo total (Q) <span class="req">*</span></span><input type="number" name="CostoTotal" required min="0" step="0.01" inputmode="decimal" value="${esc(c?.CostoTotal || '')}" data-input="compra-calc"></label>
+            <div class="span-all" data-compra-calc>${costoQuintalHtml(c?.CantidadQuintales, c?.CostoTotal)}</div>
+            <label class="field span-all"><span>Comentarios</span><textarea name="Comentarios" maxlength="1000">${esc(c?.Comentarios || '')}</textarea></label>
+            ${c ? justField() : ''}</div>
+            <p class="muted center">La fecha y la hora de registro las pone la plataforma al guardar.</p>`,
+        submitLabel: c ? 'Guardar cambios' : 'Guardar compra',
+        onSubmit: async (fd) => {
+            const p = formPayload(fd);
+            if (p.Hasta < p.Desde) throw new Error('La fecha "hasta" no puede ser anterior a "desde".');
+            if (c) Object.assign(p, { CompraID: c.CompraID, GranjaID: c.GranjaID });
+            await save('saveCompra', p, c ? 'Compra actualizada.' : 'Compra guardada.', { snapshot: false });
+        },
+    });
+}
+function costoQuintalHtml(q, costo) {
+    const n = toNum(q), cst = toNum(costo);
+    return n && cst !== null ? `<div class="alert alert-info">${ico('wheat')}<span>Costo por quintal: <strong>${esc(fmtQ(cst / n))}</strong></span></div>` : '';
+}
+async function deleteCompraFlow(c) {
+    await openModal({
+        title: 'Eliminar compra de concentrado', danger: true, submitLabel: 'Eliminar',
+        body: `<p class="center">${esc(fmtNum(c.CantidadQuintales))} qq por ${esc(fmtQ(c.CostoTotal))}, del ${esc(fmtDate(c.Desde))} al ${esc(fmtDate(c.Hasta))}.</p>${justField()}`,
+        onSubmit: async fd => save('deleteCompra', { CompraID: c.CompraID, justificacion: fd.get('justificacion') }, 'Compra eliminada.', { snapshot: false }),
+    });
+}
+
+// ---------- Pesos estándar ----------
+async function openEstandarModal(x = null) {
+    const gen = x?.LineaGenetica || state.estGen, tipo = x?.Tipo || state.estTipo;
+    const ultima = [...(state.estFilas?.values() || [])].pop();
+    await openModal({
+        title: x ? `Corregir día ${x.EdadDias} · ${gen}` : `Agregar edad · ${gen}`, wide: true,
+        body: `<p class="center">${esc(gen)} · tabla ${esc(tipo === 'Comercial' ? 'comercial' : 'de hembra reproductora')}. Los pesos van en gramos.</p>
+            <div class="form-grid">
+            <label class="field"><span>Edad (días) <span class="req">*</span></span><input type="number" name="EdadDias" required min="0" max="1000" step="1" value="${esc(x?.EdadDias ?? '')}">
+                <small class="field-hint">Semana × 7 (por ejemplo, semana 17 = 119 días).</small></label>
+            <label class="field"><span>Mínimo (g)</span><input type="number" name="MinimoG" min="0" step="any" value="${esc(x?.MinimoG ?? '')}"></label>
+            <label class="field"><span>Estándar (g) <span class="req">*</span></span><input type="number" name="EstandarG" required min="0" step="any" value="${esc(x?.EstandarG ?? '')}"></label>
+            <label class="field"><span>Máximo (g)</span><input type="number" name="MaximoG" min="0" step="any" value="${esc(x?.MaximoG ?? '')}"></label>
+            <label class="field span-all"><span>Fuente (guía, edición y página) <span class="req">*</span></span><input name="Fuente" required maxlength="300" value="${esc(x?.Fuente || ultima?.Fuente || '')}"></label>
+            ${x ? justField('Explica qué cambió en la guía.') : ''}</div>`,
+        submitLabel: x ? 'Guardar corrección' : 'Agregar',
+        onSubmit: async (fd) => {
+            const p = { ...formPayload(fd), LineaGenetica: gen, Tipo: tipo };
+            if (x) p.EstandarID = x.EstandarID;
+            await save('saveEstandar', p, x ? 'Peso corregido.' : 'Edad agregada.');
+        },
+    });
+}
+async function deleteEstandarFlow(x) {
+    await openModal({
+        title: `Borrar día ${x.EdadDias} · ${x.LineaGenetica}`, danger: true, submitLabel: 'Borrar',
+        body: `<p class="center">Estándar ${esc(fmtNum(x.EstandarG))} g. Los pesajes de esa edad se compararán con las edades vecinas.</p>${justField()}`,
+        onSubmit: async fd => save('deleteEstandar', { EstandarID: x.EstandarID, justificacion: fd.get('justificacion') }, 'Fila borrada.'),
+    });
+}
+
 // ---------- Listas ----------
 async function deleteListaFlow(l) {
     if (!l) return;
@@ -2228,6 +2530,15 @@ const ACTIONS = {
     // Listas
     'delete-lista': el => deleteListaFlow(state.db.listas.find(l => l.ListaID === el.dataset.id)),
 
+    // Concentrado y pesos estándar
+    'new-compra': () => openCompraModal(),
+    'edit-compra': el => openCompraModal(state.compras.get(el.dataset.id)),
+    'delete-compra': el => deleteCompraFlow(state.compras.get(el.dataset.id)),
+    'est-tipo': (el) => { state.estTipo = el.dataset.tipo; render(); },
+    'new-estandar': () => openEstandarModal(),
+    'edit-estandar': el => openEstandarModal(state.estFilas.get(el.dataset.id)),
+    'delete-estandar': el => deleteEstandarFlow(state.estFilas.get(el.dataset.id)),
+
     // Seguridad
     'verify-audit': async (el) => {
         el.disabled = true; el.classList.add('is-loading');
@@ -2245,6 +2556,10 @@ function focusGranja(id) {
 }
 
 const INPUTS = {
+    'compra-calc': (el) => {
+        const box = el.form.querySelector('[data-compra-calc]');
+        if (box) box.innerHTML = costoQuintalHtml(el.form.CantidadQuintales.value, el.form.CostoTotal.value);
+    },
     'table-q': (el) => { state.q[el.dataset.table] = el.value; refreshTable(el.dataset.table); },
     'iec-calc': (el) => {
         const t = toNum(el.form.Temperatura.value), h = toNum(el.form.Humedad.value);
@@ -2265,6 +2580,8 @@ const CHANGES = {
         const box = f.querySelector('[data-ubic-info]');
         const fecha = f.Fecha ? f.Fecha.value : today();
         if (box) box.innerHTML = infoUbicacion(f.NaveID.value, fecha || today());
+        syncEdadRegistro(f, loteEn(f.NaveID.value, fecha || today()), fecha || today());
+        if (pz) pz.esperado = esperadoPesaje(f.NaveID.value, fecha || today());
         if (pz && !pz.editando) {
             pz.naveId = f.NaveID.value; pz.fecha = fecha;
             const b = leerBorrador(pz.naveId, pz.fecha);
@@ -2310,6 +2627,7 @@ const CHANGES = {
     'f-hasta': el => setFiltro({ hasta: el.value }),
     'f-eliminados': el => setFiltro({ eliminados: el.checked }),
     'bit-granja': (el) => { state.bitGranja = el.value; render(); },
+    'est-gen': (el) => { state.estGen = el.value; render(); },
     'user-rol': (el) => {
         const fs = el.form?.querySelector('[data-granjas]');
         if (fs) fs.hidden = el.value === ROLES.ADMIN;
@@ -2510,6 +2828,8 @@ function limpiarSesion() {
     state.registros = new Map();
     state.pesajes = new Map();
     state.lecturas = new Map();
+    state.compras = new Map();
+    state.estFilas = new Map();
     pz = null;
     chartUnmounts.forEach(f => f());
     chartUnmounts = [];

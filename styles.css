@@ -19,7 +19,7 @@
     --surface: #FFFFFF;
     --surface-2: #F7FBF6;
     --text: #1F2D1F;
-    --muted: #5F7362;
+    --muted: #4E6151;          /* ≥ 5.5:1 sobre todos los fondos claros */
     --line: #D3E4D0;
 
     --ok: #1B5E20;
@@ -35,8 +35,8 @@
     --raised-sm: 0 0 0 1px var(--line);
     --inset: inset 0 0 0 1px var(--line);
     --inset-sm: inset 0 0 0 1px #C3D8BF;
-    --grad-primary: linear-gradient(135deg, #388E3C 0%, #2E7D32 100%);
-    --grad-secondary: linear-gradient(135deg, #66BB6A 0%, #43A047 100%);
+    --grad-primary: linear-gradient(135deg, #2E7D32 0%, #1B5E20 100%);   /* texto blanco ≥ 5.1:1 */
+    --grad-secondary: linear-gradient(135deg, #43A047 0%, #388E3C 100%);   /* solo íconos y barras (≥ 3:1); el texto va sobre --grad-primary */
     --grad-tertiary: linear-gradient(135deg, #C8E6C9 0%, #A5D6A7 100%);
 
     --r-lg: 8px;
@@ -175,7 +175,7 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; }
 .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 .btn-primary { background: var(--grad-primary); color: #fff; }
 .btn-primary:hover { color: #fff; }
-.btn-accent { background: var(--grad-secondary); color: #fff; }
+.btn-accent { background: var(--grad-primary); color: #fff; }
 .btn-accent:hover { color: #fff; }
 .btn-danger { color: var(--danger); }
 .btn-danger.btn-solid { background: linear-gradient(135deg, #D0435B 0%, #A51D33 100%); color: #fff; }
@@ -183,7 +183,7 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; }
 .btn-ghost:hover { box-shadow: var(--raised-sm); }
 .btn-sm { min-height: 34px; padding: 0 14px; font-size: 0.84rem; }
 .btn-block { width: 100%; }
-.btn-link { background: none; box-shadow: none; min-height: auto; padding: 4px; color: var(--secondary); }
+.btn-link { background: none; box-shadow: none; min-height: auto; padding: 4px; color: var(--primary-2); }
 .btn.is-loading { pointer-events: none; opacity: .75; }
 .btn.is-loading::after {
     content: ''; width: 14px; height: 14px; border-radius: 50%;
@@ -225,7 +225,7 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; }
 .user-chip-text span { font-size: 0.76rem; color: var(--muted); }
 .avatar {
     width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center;
-    background: var(--grad-secondary); color: #fff; font-weight: 800; font-size: 0.85rem;
+    background: var(--grad-primary); color: #fff; font-weight: 800; font-size: 0.85rem;
 }
 .sidebar-backdrop {
     position: fixed; inset: 0; z-index: 35; background: rgba(15, 39, 71, 0.35);
@@ -261,7 +261,8 @@ fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; }
 .card-head h2, .card-head h3 { display: flex; align-items: center; gap: var(--s2); }
 .card-head h2 .icon, .card-head h3 .icon { color: var(--secondary); }
 .card-title-center { justify-content: center; text-align: center; }
-.card.is-disabled { opacity: .55; filter: grayscale(.85); box-shadow: var(--inset); }
+/* Suspendido o inactivo: en gris y con borde punteado, sin transparencia (el texto conserva su contraste). */
+.card.is-disabled { filter: grayscale(.85); box-shadow: none; outline: 1px dashed var(--muted); outline-offset: -1px; }
 .section-head { display: flex; flex-direction: column; align-items: center; gap: var(--s2); text-align: center; }
 .section-head p { max-width: 640px; }
 .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(460px, 100%), 1fr)); gap: var(--s5); }
@@ -437,7 +438,7 @@ details.ficha[open] > summary .icon:last-child { transform: rotate(180deg); }
 .nave-head strong { display: inline-flex; align-items: center; gap: 6px; }
 .lote { display: flex; align-items: center; justify-content: center; gap: var(--s2); font-size: 0.88rem; }
 .lote .icon { color: var(--secondary); }
-.is-inactive { opacity: .6; }
+.is-inactive { filter: grayscale(1); outline: 1px dashed var(--muted); outline-offset: -1px; }
 .historial { font-size: 0.82rem; }
 .historial summary { cursor: pointer; color: var(--muted); font-weight: 600; }
 .historial ul { list-style: none; padding: 0; margin: var(--s2) 0 0; display: flex; flex-direction: column; gap: var(--s1); }
@@ -461,7 +462,7 @@ details.ficha[open] > summary .icon:last-child { transform: rotate(180deg); }
 .iec-verde { --iec: #3FBF7F; }
 .iec-amarillo { --iec: #F2C94C; }
 .iec-naranja { --iec: #F2994A; }
-.iec-rojo { --iec: #E5484D; }
+.iec-rojo { --iec: #C62828; }   /* texto blanco 5.6:1 */
 .badge-iec { background: var(--iec); }
 .iec-rojo.badge-iec { color: #fff; }
 .iec-scale { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--s3); }
@@ -523,12 +524,15 @@ details.ficha[open] > summary .icon:last-child { transform: rotate(180deg); }
 .filters-card .field input, .filters-card .field select, .filters-card .dropdown > summary {
     background: #fff; color: var(--text); box-shadow: none; border: 0;
 }
-.filters-card .segmented { background: rgba(255, 255, 255, 0.14); box-shadow: none; }
-.filters-card .seg { color: #E8F5E9; }
-.filters-card .seg:hover:not(:disabled) { color: #fff; }
+/* Sobre la franja verde los controles van más oscuros que ella (no más claros): texto blanco ≥ 7:1. */
+.filters-card .segmented { background: rgba(0, 0, 0, 0.18); box-shadow: none; }
+.filters-card .seg { color: #fff; }
+.filters-card .seg:hover:not(:disabled) { color: #fff; background: rgba(0, 0, 0, 0.12); }
 .filters-card .seg.is-active { background: #fff; color: var(--primary-2); box-shadow: none; }
-.filters-card .presets .btn { background: rgba(255, 255, 255, 0.14); color: #fff; box-shadow: none; }
-.filters-card .presets .btn:hover { background: rgba(255, 255, 255, 0.24); }
+.filters-card .presets .btn { background: rgba(0, 0, 0, 0.18); color: #fff; box-shadow: none; }
+.filters-card .presets .btn:hover { background: rgba(0, 0, 0, 0.28); }
+/* El panel del selector de granjas es blanco: su texto vuelve al color normal. */
+.filters-card .dropdown-panel .check { color: var(--text); }
 .filters-card .badge { background: #fff; color: var(--primary-2); }
 .filters-card .check input { accent-color: #A5D6A7; }
 

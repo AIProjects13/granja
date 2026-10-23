@@ -20,7 +20,7 @@ export const PALETTE = {
     cat: ['#2E7D32', '#1E88A8', '#D08A00', '#8E5BB5', '#5C8A00', '#C2185B'],
     track: '#E4EFE2',         // fondo de barras y medidores
     grid: 'rgba(46, 125, 50, 0.10)',
-    axis: '#5F7362',
+    axis: '#4E6151',
     text: '#1F2D1F',
 };
 
@@ -68,7 +68,7 @@ function valueRange(spec) {
         });
         min = Math.min(0, min);
     } else {
-        spec.series.forEach(s => s.data.forEach((v) => {
+        spec.series.concat(spec.band ? [{ data: spec.band.lo }, { data: spec.band.hi }] : []).forEach(s => s.data.forEach((v) => {
             if (v === null || v === undefined) return;
             min = Math.min(min, v); max = Math.max(max, v);
         }));
@@ -108,7 +108,8 @@ function draw(ctx, w, h, spec, { hover = null, exporting = false } = {}) {
     // Leyenda centrada (con salto de línea si no cabe).
     ctx.font = `600 ${fs}px ${FONT}`;
     ctx.textBaseline = 'middle';
-    const items = spec.series.map(s => ({ s, w: 26 + ctx.measureText(s.name).width + 18 }));
+    const leyenda = spec.band ? spec.series.concat([{ name: spec.band.name, color: spec.band.color, banda: true }]) : spec.series;
+    const items = leyenda.map(s => ({ s, w: 26 + ctx.measureText(s.name).width + 18 }));
     const rows = [[]];
     let rowW = 0;
     items.forEach((it) => {
@@ -122,7 +123,9 @@ function draw(ctx, w, h, spec, { hover = null, exporting = false } = {}) {
         const y = top + ri * lh + lh / 2;
         row.forEach(({ s, w: iw }) => {
             ctx.strokeStyle = s.color; ctx.fillStyle = s.color; ctx.lineWidth = 3;
-            if (spec.type === 'bar' && !s.line) {
+            if (s.banda) {
+                ctx.fillStyle = s.color + '40'; roundRect(ctx, x, y - 6, 18, 12, 3); ctx.fill();
+            } else if (spec.type === 'bar' && !s.line) {
                 roundRect(ctx, x, y - 6, 18, 12, 3); ctx.fill();
             } else {
                 ctx.setLineDash(s.dashed ? [5, 4] : []);
@@ -177,6 +180,25 @@ function draw(ctx, w, h, spec, { hover = null, exporting = false } = {}) {
     if (hover !== null) {
         ctx.fillStyle = 'rgba(59, 167, 242, 0.10)';
         ctx.fillRect(L + band * hover, T, band, ph);
+    }
+
+    // Banda mín–máx (rango de referencia): relleno suave detrás de las series, por tramos sin huecos.
+    if (spec.band) {
+        const { lo: bLo, hi: bHi } = spec.band;
+        let tramo = [];
+        const cerrar = () => {
+            if (tramo.length) {
+                ctx.beginPath();
+                tramo.forEach((i, k) => (k ? ctx.lineTo(xc(i), y(bHi[i])) : ctx.moveTo(xc(i), y(bHi[i]))));
+                [...tramo].reverse().forEach(i => ctx.lineTo(xc(i), y(bLo[i])));
+                ctx.closePath();
+                ctx.fillStyle = spec.band.color + '33'; ctx.fill();
+                if (tramo.length === 1) { ctx.strokeStyle = spec.band.color + '80'; ctx.lineWidth = band * 0.5; ctx.stroke(); }
+            }
+            tramo = [];
+        };
+        bLo.forEach((v, i) => { if (v === null || bHi[i] === null) cerrar(); else tramo.push(i); });
+        cerrar();
     }
 
     // Barras
@@ -257,6 +279,9 @@ function draw(ctx, w, h, spec, { hover = null, exporting = false } = {}) {
 
 function drawTooltip(ctx, spec, i, x, T, w, fs) {
     const lines = spec.series.map(s => ({ s, text: `${s.name}: ${fmt(s.data[i])}${s.data[i] !== null && s.data[i] !== undefined && spec.unit ? ' ' + spec.unit : ''}` }));
+    if (spec.band && spec.band.lo[i] !== null && spec.band.hi[i] !== null) {
+        lines.push({ s: spec.band, text: `${spec.band.name}: ${fmt(spec.band.lo[i])} – ${fmt(spec.band.hi[i])}${spec.unit ? ' ' + spec.unit : ''}` });
+    }
     ctx.font = `700 ${fs}px ${FONT}`;
     const title = String(spec.labels[i]);
     let bw = ctx.measureText(title).width;
