@@ -1607,6 +1607,9 @@ function auditHtml(r) {
  */
 function openModal({ title, body, submitLabel = 'Guardar', danger = false, wide = false, onSubmit, cancelLabel = 'Cancelar' }) {
     const dlg = $('#modal');
+    // El evento "close" del modal anterior puede llegar después de abrir este: se da por terminado
+    // aquí, para que ese evento tardío no borre este contenido ni termine la promesa equivocada.
+    terminarModal?.();
     dlg.className = `modal${wide ? ' modal-wide' : ''}`;
     dlg.innerHTML = `<form class="modal-card" novalidate>
         <header class="modal-head"><span></span><h2>${esc(title)}</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">${ico('x')}</button></header>
@@ -1621,7 +1624,15 @@ function openModal({ title, body, submitLabel = 'Guardar', danger = false, wide 
         const form = dlg.querySelector('form');
         let result = null;
         dlg.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => dlg.close()));
-        dlg.addEventListener('close', () => { dlg.innerHTML = ''; resolve(result); }, { once: true });
+        // Si al llegar el evento el diálogo ya está abierto otra vez, es el "close" tardío de un modal anterior.
+        const alCerrar = () => { if (dlg.open) return; dlg.innerHTML = ''; terminar(); };
+        const terminar = () => {
+            dlg.removeEventListener('close', alCerrar);
+            if (terminarModal === terminar) terminarModal = null;
+            resolve(result);
+        };
+        terminarModal = terminar;
+        dlg.addEventListener('close', alCerrar);
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             if (!onSubmit) return dlg.close();
@@ -1656,6 +1667,8 @@ function openModal({ title, body, submitLabel = 'Guardar', danger = false, wide 
     });
 }
 function closeModal() { const d = $('#modal'); if (d.open) d.close(); }
+/** Termina el modal en curso (quita su escucha de "close" y resuelve su promesa); ver openModal. */
+let terminarModal = null;
 
 /** Mensajes de validación propios (en español, sin depender del idioma del navegador). */
 function validityMsg(el) {
@@ -1748,14 +1761,18 @@ function infoUbicacion(naveId, fecha) {
     const dias = edadDias(l, fecha);
     const tipo = tipoEstandar(n.Linea);
     const esp = esperado(l.LineaGenetica, tipo, dias);
-    let extra = '';
-    if (tipo && dias === null) extra = '<br>El lote no tiene edad inicial: edítalo para comparar con la tabla de su línea genética.';
-    else if (tipo) {
-        extra = `<br>Edad: <strong>${esc(textoEdad(dias))}</strong>` + (esp
+    const costo = toNum(l.CostoPorAve);
+    let extra = costo !== null ? ` · ${esc(fmtQ(costo))} por ave` : '';
+    let boton = '';
+    if (tipo && dias === null) {
+        extra += '<br>El lote no tiene la edad de las aves al iniciar: sin ella no se compara con la tabla de su línea genética.';
+        boton = `<button type="button" class="btn btn-sm" data-action="lote-desde-form" data-id="${esc(l.LoteID)}">${ico('tag')}Completar el lote</button>`;
+    } else if (tipo) {
+        extra += `<br>Edad: <strong>${esc(textoEdad(dias))}</strong>` + (esp
             ? ` · Peso esperado (${esc(l.LineaGenetica)}): <strong>${esc(fmtPeso(esp.estandarG))}</strong>${esp.minimoG !== null ? ` (rango ${esc(fmtPeso(esp.minimoG))} – ${esc(fmtPeso(esp.maximoG))})` : ''}`
             : ` · Sin tabla de peso de ${esc(l.LineaGenetica)} para esta edad.`);
     }
-    return `<div class="alert alert-info">${ico('tag')}<span>Lote <strong>${esc(l.NumeroLote)}</strong> · ${esc(l.LineaGenetica)} · desde ${esc(fmtDate(l.FechaInicio))}${extra}</span></div>`;
+    return `<div class="alert alert-info">${ico('tag')}<span>Lote <strong>${esc(l.NumeroLote)}</strong> · Línea genética <strong>${esc(l.LineaGenetica)}</strong> · desde ${esc(fmtDate(l.FechaInicio))}${extra}</span>${boton}</div>`;
 }
 /** Peso esperado (g) de la nave en esa fecha, según la línea genética de su lote y la edad. */
 function esperadoPesaje(naveId, fecha) {
@@ -2462,6 +2479,12 @@ const ACTIONS = {
     'edit-lote': el => openLoteModal(null, loteById(el.dataset.id)),
     'cerrar-lote': el => cerrarLoteFlow(loteById(el.dataset.id)),
     'reabrir-lote': el => reabrirLoteFlow(loteById(el.dataset.id)),
+    // Desde el formulario de registro o de pesaje: cierra ese formulario y abre el del lote.
+    'lote-desde-form': (el) => {
+        const lote = loteById(el.dataset.id);
+        closeModal();
+        setTimeout(() => openLoteModal(null, lote), 60);
+    },
 
     // Filtros
     'set-linea': (el) => { state.linea = el.dataset.linea; state.f.sector = ''; state.f.nave = ''; render(); },
