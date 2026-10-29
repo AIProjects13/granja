@@ -77,6 +77,7 @@ const emptyDb = () => ({
     granjas: [], perfiles: [], users: [], listas: [], sectores: [], naves: [], lotes: [],
     campos: { perfil: [], Reproductora: [], Incubadora: [], Engorde: [], Postura: [] }, tiposLista: [],
     geneticaDe: {}, iecRangos: [], diasRetroactivos: 7, maxMuestra: 1000, estandares: [], tiposEstandar: [],
+    enfermedades: [], metodosSerologia: [], pruebasSerologia: {},
 });
 const filtrosIniciales = () => ({ desde: daysAgo(CONFIG.RANGO_INICIAL_DIAS), hasta: today(), granjas: [], agrupar: 'semana', eliminados: false, sector: '', nave: '' });
 
@@ -99,6 +100,9 @@ const state = {
     pesajes: new Map(),      // PesajeID → pesaje visible
     lecturas: new Map(),     // LecturaID → lectura visible
     compras: new Map(),      // CompraID → compra de concentrado visible
+    serologias: new Map(),   // SerologiaID → muestreo serológico visible
+    srEnf: '',               // Serología: enfermedad y método elegidos en los filtros
+    srMetodo: '',
     estFilas: new Map(),     // EstandarID → fila de la curva visible
     estGen: '',              // Pesos estándar: línea genética y tabla elegidas
     estTipo: 'Comercial',
@@ -650,11 +654,11 @@ function mountCharts() {
 
 const NAV = {
     ADMIN: [['dashboard', 'Dashboard', 'layout-dashboard'], ['registros', 'Registros', 'clipboard-list'],
-        ['pesajes', 'Pesajes', 'scale'], ['ambiente', 'Estrés calórico', 'thermometer'], ['concentrado', 'Concentrado', 'wheat'],
+        ['pesajes', 'Pesajes', 'scale'], ['serologia', 'Serología', 'syringe'], ['ambiente', 'Estrés calórico', 'thermometer'], ['concentrado', 'Concentrado', 'wheat'],
         ['granjas', 'Granjas', 'warehouse'], ['usuarios', 'Usuarios', 'users'], ['listas', 'Listas', 'list'], ['estandares', 'Pesos estándar', 'chart-line'],
         ['bitacora', 'Bitácora', 'history'], ['seguridad', 'Seguridad', 'shield-check']],
     REPRESENTANTE: [['granja', 'Mi granja', 'warehouse'], ['dashboard', 'Dashboard', 'layout-dashboard'],
-        ['registros', 'Registros', 'clipboard-list'], ['pesajes', 'Pesajes', 'scale'], ['ambiente', 'Estrés calórico', 'thermometer'],
+        ['registros', 'Registros', 'clipboard-list'], ['pesajes', 'Pesajes', 'scale'], ['serologia', 'Serología', 'syringe'], ['ambiente', 'Estrés calórico', 'thermometer'],
         ['concentrado', 'Concentrado', 'wheat'], ['bitacora', 'Bitácora', 'history']],
 };
 const HOME = { ADMIN: 'dashboard', REPRESENTANTE: 'granja' };
@@ -663,6 +667,7 @@ const VIEWS = {
     dashboard: { roles: ALL, title: 'Dashboard', render: viewDashboard },
     registros: { roles: ALL, title: 'Registros diarios', render: viewRegistros },
     pesajes: { roles: ALL, title: 'Pesajes por muestra', render: viewPesajes },
+    serologia: { roles: ALL, title: 'Serología por lote', render: viewSerologia },
     ambiente: { roles: ALL, title: 'Estrés calórico', render: viewAmbiente },
     concentrado: { roles: ALL, title: 'Compras de concentrado', render: viewConcentrado },
     estandares: { roles: A, title: 'Pesos estándar por línea genética', render: viewEstandares },
@@ -797,12 +802,13 @@ function dateFilters() {
         `<button type="button" class="btn btn-sm" data-action="preset" data-days="${d}">${l}</button>`).join('')}</div></div>`;
 }
 
-function filtersCard({ lineas = true, fechas = true, agrupar = false, eliminados = false, ubicacion = true, unidad = false } = {}) {
+function filtersCard({ lineas = true, fechas = true, agrupar = false, eliminados = false, ubicacion = true, unidad = false, extra = '' } = {}) {
     const disp = lineas ? ensureLinea(ctxIds()) : [];
     return `<div class="card filters-card"><div class="filters">
         ${isAdmin() ? granjaPicker() : granjaSwitch()}
         ${lineas ? lineaTabs(disp) : ''}
         ${lineas && ubicacion ? ubicacionFilters() : ''}
+        ${extra}
         ${fechas ? dateFilters() : ''}
         ${agrupar ? `<div class="filter-group"><span class="field-label">Agrupar por</span><div class="segmented" role="group" aria-label="Agrupar por">${AGRUPAR.map(([k, l]) =>
         `<button type="button" class="seg${state.f.agrupar === k ? ' is-active' : ''}" data-action="set-agrupar" data-agrupar="${k}" aria-pressed="${state.f.agrupar === k}">${l}</button>`).join('')}</div></div>` : ''}
@@ -1508,6 +1514,147 @@ function viewConcentrado() {
     });
 }
 
+/**
+ * Serología: muestreos por lote (un título por ave) con su resumen, gráficos por edad y los
+ * métodos o kits. Los gráficos solo comparan una enfermedad con un método (los kits no se mezclan).
+ */
+function viewSerologia() {
+    const ids = ctxIds();
+    if (!ids.length) return noGranjas();
+    if (state.srEnf && !enfermedadById(state.srEnf)) state.srEnf = '';
+    const metodos = state.srEnf ? metodosDe(state.srEnf, ids) : [];
+    if (state.srMetodo && !metodos.some(m => m.MetodoID === state.srMetodo)) state.srMetodo = '';
+    const metodo = metodoById(state.srMetodo);
+    const selectores = `<label class="field"><span>Enfermedad</span><select data-change="sr-f-enf"><option value="">Todas</option>${state.db.enfermedades.map(e =>
+        `<option value="${esc(e.EnfermedadID)}"${e.EnfermedadID === state.srEnf ? ' selected' : ''}>${esc(e.Nombre)}</option>`).join('')}</select></label>
+        <label class="field"><span>Método</span><select data-change="sr-f-metodo"${state.srEnf ? '' : ' disabled'}><option value="">${state.srEnf ? 'Todos' : 'Elige la enfermedad'}</option>${metodos.map(m =>
+        `<option value="${esc(m.MetodoID)}"${m.MetodoID === state.srMetodo ? ' selected' : ''}>${esc(nombreMetodo(m))}</option>`).join('')}</select></label>`;
+    const head = filtersCard({ eliminados: true, extra: selectores });
+    if (!lineasDisponibles(ids).length) return head + sinLineas();
+    const linea = state.linea;
+    const aviso = sinEstructura(linea);
+    const nuevo = aviso || `<div class="section-head"><p class="muted">Se elige la nave, la fecha del muestreo, la enfermedad y el método, y se escribe el resultado de cada ave. La plataforma calcula el resumen.</p>
+        <button type="button" class="btn btn-primary" data-action="new-serologia">${ico('syringe')}Nuevo muestreo</button></div>`;
+    const r = need('getSerologias', registrosPayload({
+        EnfermedadID: state.srEnf || undefined, MetodoID: state.srMetodo || undefined,
+        incluirEliminados: isAdmin() && state.f.eliminados ? true : undefined,
+    }));
+    const cuerpo = (() => {
+        if (!r) return loadingBlock(1);
+        if (!r.ok) return errorBlock(r);
+        const filas = r.data.serologias;
+        state.serologias = new Map(filas.map(x => [x.SerologiaID, x]));
+        const graficos = metodo
+            ? seroCharts(filas, metodo)
+            : `<div class="alert alert-info">${ico('info')}<span>Elige una enfermedad y un método para ver los gráficos por edad. Los resultados de métodos distintos no se comparan entre sí.</span></div>`;
+        return graficos + table('serologias', {
+            title: `Muestreos de ${linea.toLowerCase()}`, icon: 'syringe', csv: `serologia-${linea}`,
+            empty: 'No hay muestreos en el rango seleccionado.', rows: filas,
+            columns: [{ k: 'Fecha', l: 'Fecha', t: 'date', sticky: true }].concat(colsGranja(), COLS_UBICACION, [
+                { k: 'EdadDias', l: 'Edad (días)', t: 'num' }, { k: 'SemanaEdad', l: 'Semana de edad', t: 'num' },
+                { k: 'Enfermedad', l: 'Enfermedad' }, { k: 'Metodo', l: 'Método' }, { k: 'Prueba', l: 'Prueba' },
+                { k: 'Muestra', l: 'Muestra', t: 'num' },
+                { k: 'Resumen', l: 'Resumen', t: 'num', get: x => toNum(valorResumen(x)) },
+                { k: 'Maximo', l: 'Dato mayor', t: 'num' }, { k: 'CV', l: 'CV (%)', t: 'num' },
+                { k: 'PctPositivos', l: 'Positivas (%)', t: 'num' }, { k: 'PctProtegidas', l: 'Protegidas (%)', t: 'num' },
+            ], linea === 'Incubadora' ? [{ k: 'LoteOrigen', l: 'Lote de origen' }] : [], [
+                { k: 'Laboratorio', l: 'Laboratorio' }, { k: 'Valores', l: 'Resultados', nocsv: false, wrap: true, html: x => `<span class="muted">${esc(String(x.Valores || '').split(',').filter(Boolean).length)} resultados</span>` },
+                { k: 'CreadoPor', l: 'Registrado por' }, { k: 'CreadoEn', l: 'Registrado el', t: 'datetime' },
+            ], isAdmin() && state.f.eliminados ? [{ k: 'Estado', l: 'Estado', html: x => badgeEstado(x.Estado === 'Activo' ? 'Activo' : 'Eliminado') }] : []),
+            rowClass: x => (x.Estado !== 'Activo' ? 'is-deleted' : ''),
+            actions: x => `<button type="button" class="icon-btn icon-btn-sm" data-action="ver-serologia" data-id="${esc(x.SerologiaID)}" title="Ver los resultados" aria-label="Ver los resultados">${ico('list-checks')}</button>`
+                + (x.Estado === 'Activo' && !modificable(x.CreadoEn) ? sinPermisoFecha() : '')
+                + (x.Estado === 'Activo' && modificable(x.CreadoEn) ? `<button type="button" class="icon-btn icon-btn-sm" data-action="edit-serologia" data-id="${esc(x.SerologiaID)}" title="Editar" aria-label="Editar muestreo">${ico('pencil')}</button>
+                   <button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-serologia" data-id="${esc(x.SerologiaID)}" title="Eliminar" aria-label="Eliminar muestreo">${ico('trash')}</button>` : ''),
+        });
+    })();
+    return head + nuevo + cuerpo + metodosTabla(ids);
+}
+
+/** Métodos o kits visibles en el contexto: generales y los propios de las granjas elegidas. */
+function metodosTabla(ids) {
+    const filas = state.db.metodosSerologia.filter(m => !m.GranjaID || ids.includes(m.GranjaID))
+        .filter(m => !state.srEnf || m.EnfermedadID === state.srEnf);
+    const puedeEditar = m => isAdmin() || !!m.GranjaID;
+    return `<div class="section-head"><p class="muted">Cada granja usa su propio método o kit. El corte de positivo y el nivel protector se anotan solo si están publicados (inserto del kit o documento del laboratorio), con su fuente.</p>
+        <button type="button" class="btn" data-action="new-metodo">${ico('plus')}Nuevo método</button></div>` + table('metodos-serologia', {
+        title: 'Métodos o kits', icon: 'list-checks', csv: 'metodos-serologia',
+        empty: 'No hay métodos para la enfermedad elegida.', rows: filas,
+        columns: [
+            { k: 'EnfermedadID', l: 'Enfermedad', sticky: true, get: m => enfermedadById(m.EnfermedadID)?.Nombre || '—' },
+            { k: 'Nombre', l: 'Método' }, { k: 'Prueba', l: 'Prueba' }, { k: 'Unidad', l: 'Unidad' },
+            { k: 'GranjaID', l: 'De', get: m => (m.GranjaID ? granjaName(m.GranjaID) : 'General (todas)') },
+            { k: 'Laboratorio', l: 'Laboratorio' }, { k: 'CortePositivo', l: 'Positivo desde', t: 'num' },
+            { k: 'NivelProtector', l: 'Nivel protector', t: 'num' }, { k: 'Fuente', l: 'Fuente', wrap: true },
+        ],
+        actions: m => (puedeEditar(m)
+            ? `<button type="button" class="icon-btn icon-btn-sm" data-action="edit-metodo" data-id="${esc(m.MetodoID)}" title="Editar" aria-label="Editar método">${ico('pencil')}</button>
+               <button type="button" class="icon-btn icon-btn-sm danger" data-action="delete-metodo" data-id="${esc(m.MetodoID)}" title="Eliminar" aria-label="Eliminar método">${ico('trash')}</button>`
+            : `<span class="icon-btn icon-btn-sm muted" title="Método general: lo modifica la administración" aria-label="Método general: lo modifica la administración">${ico('lock')}</span>`),
+    });
+}
+
+/** Valor que resume el muestreo según su prueba (HI: promedio log2; ELISA: media geométrica; placa: % positivas). */
+function valorResumen(x) {
+    return x.Prueba === 'HI' ? x.Promedio : x.Prueba === 'ELISA' ? x.MediaGeometrica : x.PctPositivos;
+}
+
+/**
+ * Gráficos por edad (días) de una enfermedad y un método: una serie por granja (vista global con
+ * varias granjas) o por nave. Varios muestreos de la misma serie y edad se combinan (ELISA con
+ * media geométrica; el resto, promedio). El corte y el nivel protector van como líneas punteadas.
+ */
+function seroCharts(filas, metodo) {
+    const activos = filas.filter(x => x.Estado === 'Activo' && x.EdadDias !== '');
+    if (!activos.length) {
+        return `<div class="alert alert-info">${ico('info')}<span>${filas.some(x => x.Estado === 'Activo')
+            ? 'Los muestreos de lotes sin la edad de las aves al iniciar no se pueden ubicar por edad. Completa la edad en "Editar lote".'
+            : 'No hay muestreos de este método en el rango seleccionado.'}</span></div>`;
+    }
+    const porGranja = isAdmin() && new Set(activos.map(x => x.GranjaID)).size > 1;
+    const clave = x => (porGranja ? granjaName(x.GranjaID) : [x.Sector, x.Nave].filter(Boolean).join(' / '));
+    const dias = [...new Set(activos.map(x => Number(x.EdadDias)))].sort((a, b) => a - b);
+    const combinar = (vals, geo) => (geo ? 10 ** (vals.reduce((a, v) => a + Math.log10(Math.max(v, 1)), 0) / vals.length) : vals.reduce((a, v) => a + v, 0) / vals.length);
+    const series = (campo, geo) => {
+        const grupos = new Map();
+        activos.forEach((x) => {
+            const v = toNum(x[campo]);
+            if (v === null) return;
+            if (!grupos.has(clave(x))) grupos.set(clave(x), new Map());
+            const g = grupos.get(clave(x));
+            const d = Number(x.EdadDias);
+            if (!g.has(d)) g.set(d, []);
+            g.get(d).push(v);
+        });
+        return [...grupos.entries()].sort((a, b) => a[0].localeCompare(b[0], 'es', { numeric: true })).map(([k, g], i) => ({
+            name: k, color: PALETTE.cat[i % PALETTE.cat.length],
+            data: dias.map(d => (g.has(d) ? round(combinar(g.get(d), geo), 2) : null)),
+        }));
+    };
+    const referencias = [];
+    if (metodo.Prueba !== 'PLACA' && metodo.CortePositivo !== '') {
+        referencias.push({ name: `Positivo desde ${fmtNum(metodo.CortePositivo)}`, color: PALETTE.tabla, dashed: true, data: dias.map(() => Number(metodo.CortePositivo)) });
+    }
+    if (metodo.Prueba !== 'PLACA' && metodo.NivelProtector !== '') {
+        referencias.push({ name: `Nivel protector ${fmtNum(metodo.NivelProtector)}`, color: PALETTE.o4, dashed: true, data: dias.map(() => Number(metodo.NivelProtector)) });
+    }
+    const enf = enfermedadById(metodo.EnfermedadID)?.Nombre || '';
+    const labels = dias.map(d => `Día ${d}`);
+    const titulo = { HI: 'Promedio de títulos HI (log2) por edad', ELISA: 'Media geométrica de títulos ELISA por edad', PLACA: 'Aves positivas (%) por edad' }[metodo.Prueba];
+    const campo = { HI: 'Promedio', ELISA: 'MediaGeometrica', PLACA: 'PctPositivos' }[metodo.Prueba];
+    let html = chartCard('sero-resumen', {
+        type: 'line', icon: 'syringe', title: `${enf} · ${titulo}`, labels, unir: true,
+        unit: metodo.Prueba === 'PLACA' ? '%' : '', series: series(campo, metodo.Prueba === 'ELISA').concat(referencias),
+    });
+    if (metodo.Prueba === 'ELISA') {
+        html += chartCard('sero-cv', { type: 'line', icon: 'activity', title: `${enf} · CV (%) por edad`, labels, unir: true, unit: '%', series: series('CV', false) });
+    }
+    if (metodo.Prueba !== 'PLACA' && metodo.CortePositivo !== '') {
+        html += chartCard('sero-positivas', { type: 'line', icon: 'chart-line', title: `${enf} · Aves positivas (%) por edad`, labels, unir: true, unit: '%', series: series('PctPositivos', false) });
+    }
+    return `<div class="grid-2">${html}</div>`;
+}
+
 /** Pesos estándar (admin): curva de cada línea genética por edad, con su fuente; se puede corregir. */
 function viewEstandares() {
     const r = need('getEstandares', {});
@@ -1563,6 +1710,7 @@ const TABLA_LABEL = {
     Registros_Reproductora: 'Registros de reproductora', Registros_Incubadora: 'Registros de incubadora',
     Registros_Engorde: 'Registros de engorde', Registros_Postura: 'Registros de postura',
     PesosEstandar: 'Pesos estándar', Concentrado: 'Compras de concentrado',
+    Enfermedades: 'Enfermedades', MetodosSerologia: 'Métodos serológicos', Serologias: 'Muestreos serológicos',
 };
 /** Una etiqueta por cada acción del servidor (los rechazos de cualquier acción quedan en Accesos). */
 const ACCION_LABEL = {
@@ -1581,6 +1729,8 @@ const ACCION_LABEL = {
     getAccesos: 'Consulta de accesos', verifyAudit: 'Verificar integridad',
     getEstandares: 'Consulta de pesos estándar', saveEstandar: 'Guardar peso estándar', deleteEstandar: 'Borrar peso estándar',
     getConcentrado: 'Consulta de concentrado', saveCompra: 'Guardar compra de concentrado', deleteCompra: 'Eliminar compra de concentrado',
+    getSerologias: 'Consulta de serología', saveSerologia: 'Guardar muestreo serológico', deleteSerologia: 'Eliminar muestreo serológico',
+    saveMetodoSerologia: 'Guardar método serológico', deleteMetodoSerologia: 'Eliminar método serológico',
 };
 const RESULTADO_LABEL = {
     OK: 'Correcto', NOT_REGISTERED: 'Cuenta sin acceso', SUSPENDED: 'Acceso suspendido',
@@ -1735,7 +1885,7 @@ function formPayload(fd) {
 
 // ---------- Ubicación (nave + fecha) para registros y pesajes ----------
 /** Selector de nave activa (agrupado por granja/sector) y fecha de trabajo. */
-function ubicacionInputs(linea, { naveId = '', fecha = today(), conFecha = true } = {}) {
+function ubicacionInputs(linea, { naveId = '', fecha = today(), conFecha = true, sinVentana = false } = {}) {
     const granjas = isAdmin() ? ctxIds() : [state.granjaId];
     const opciones = granjas.flatMap(gid => navesActivas(gid, linea).map(x => ({ gid, ...x })));
     if (!opciones.length) return null;
@@ -1748,9 +1898,11 @@ function ubicacionInputs(linea, { naveId = '', fecha = today(), conFecha = true 
     const elegida = naveId || (state.f.nave && opciones.some(o => o.n.NaveID === state.f.nave) ? state.f.nave : opciones[0].n.NaveID);
     const select = `<label class="field"><span>Nave <span class="req">*</span></span><select name="NaveID" required data-change="ubic-info">${[...grupos.entries()].map(([k, naves]) =>
         `<optgroup label="${esc(k)}">${naves.map(n => `<option value="${esc(n.NaveID)}"${n.NaveID === elegida ? ' selected' : ''}>${esc(n.Nombre)}</option>`).join('')}</optgroup>`).join('')}</select></label>`;
-    const min = fechaMinima();
-    const fechaHtml = conFecha ? `<label class="field"><span>Fecha <span class="req">*</span></span><input type="date" name="Fecha" required value="${esc(fecha)}" max="${today()}"${min ? ` min="${min}"` : ''} data-change="ubic-info">
-        <small class="field-hint">${isAdmin() ? 'Hoy o cualquier día anterior.' : `Hoy o hasta ${state.db.diasRetroactivos} días atrás.`}</small></label>` : '';
+    const min = sinVentana ? '' : fechaMinima();
+    const ayuda = sinVentana ? 'Día en que se tomaron las muestras (los resultados pueden llegar después).'
+        : isAdmin() ? 'Hoy o cualquier día anterior.' : `Hoy o hasta ${state.db.diasRetroactivos} días atrás.`;
+    const fechaHtml = conFecha ? `<label class="field"><span>${sinVentana ? 'Fecha del muestreo' : 'Fecha'} <span class="req">*</span></span><input type="date" name="Fecha" required value="${esc(fecha)}" max="${today()}"${min ? ` min="${min}"` : ''} data-change="ubic-info">
+        <small class="field-hint">${ayuda}</small></label>` : '';
     return `${select}${fechaHtml}<div class="span-all" data-ubic-info>${infoUbicacion(elegida, fecha)}</div>`;
 }
 function infoUbicacion(naveId, fecha) {
@@ -2382,6 +2534,238 @@ async function deleteCompraFlow(c) {
     });
 }
 
+// ---------- Serología ----------
+const PRUEBA_NOMBRE = { HI: 'HI (inhibición de la hemaglutinación)', ELISA: 'ELISA', PLACA: 'Aglutinación en placa' };
+const enfermedadById = id => state.db.enfermedades.find(e => e.EnfermedadID === id) || null;
+const metodoById = id => state.db.metodosSerologia.find(m => m.MetodoID === id) || null;
+const nombreMetodo = m => `${m.Nombre.includes(m.Prueba) ? m.Nombre : `${m.Nombre} · ${m.Prueba}`}${m.GranjaID ? '' : ' (general)'}`;
+/** Métodos de una enfermedad que sirven en esas granjas: los generales y los propios de ellas. */
+function metodosDe(enfId, granjaIds) {
+    return state.db.metodosSerologia.filter(m => m.EnfermedadID === enfId && (!m.GranjaID || granjaIds.includes(m.GranjaID))).sort(byNombre);
+}
+
+/** Lee los resultados escritos o pegados (separados por espacios, comas, punto y coma o saltos de línea). */
+function leerValoresSero(texto, prueba) {
+    const partes = String(texto || '').split(/[\s;,]+/).map(s => s.trim()).filter(Boolean);
+    const def = state.db.pruebasSerologia[prueba] || {};
+    const valores = [], malos = [];
+    partes.forEach((s) => {
+        if (prueba === 'PLACA') {
+            const v = s.toUpperCase();
+            if (v === 'P' || v === 'N') valores.push(v); else malos.push(s);
+            return;
+        }
+        const v = Number(s);
+        if (!Number.isFinite(v) || v < def.min || v > def.max || (def.entero && !Number.isInteger(v))) malos.push(s); else valores.push(v);
+    });
+    return { valores, malos };
+}
+
+/** El mismo resumen que el servidor (ver resumenSerologia_ en el backend). */
+function resumenSerologia(prueba, valores) {
+    const n = valores.length;
+    if (!n) return null;
+    if (prueba === 'PLACA') {
+        const pos = valores.filter(v => v === 'P').length;
+        return { Positivos: pos, PctPositivos: pos / n * 100 };
+    }
+    const suma = valores.reduce((a, b) => a + b, 0);
+    const o = { Maximo: Math.max(...valores), Minimo: Math.min(...valores) };
+    if (prueba === 'HI') return { ...o, Promedio: suma / n };
+    const media = suma / n;
+    const sd = n > 1 ? Math.sqrt(valores.reduce((a, v) => a + (v - media) ** 2, 0) / (n - 1)) : 0;
+    return { ...o, MediaGeometrica: suma === 0 ? 0 : 10 ** (valores.reduce((a, v) => a + Math.log10(Math.max(v, 1)), 0) / n), CV: media ? sd / media * 100 : 0 };
+}
+
+function resumenSeroHtml(prueba, valores, metodo) {
+    const st = resumenSerologia(prueba, valores);
+    if (!st) return '<p class="muted center">Escribe o pega los resultados para ver el resumen.</p>';
+    const filas = prueba === 'PLACA'
+        ? [['Positivas', `${st.Positivos} de ${valores.length}`], ['Positivas (%)', `${fmtNum(st.PctPositivos)} %`]]
+        : [[prueba === 'HI' ? 'Promedio (log2)' : 'Media geométrica', fmtNum(prueba === 'HI' ? st.Promedio : st.MediaGeometrica)],
+            ['Dato mayor', fmtNum(st.Maximo)], ['Dato menor', fmtNum(st.Minimo)]].concat(prueba === 'ELISA' ? [['CV', `${fmtNum(st.CV)} %`]] : []);
+    if (prueba !== 'PLACA' && metodo?.CortePositivo !== '' && metodo?.CortePositivo !== undefined) {
+        const pos = valores.filter(v => v >= Number(metodo.CortePositivo)).length;
+        filas.push(['Positivas', `${pos} de ${valores.length} (${fmtNum(pos / valores.length * 100)} %)`]);
+    }
+    return filas.map(([l, v]) => `<div><dt>${esc(l)}</dt><dd>${esc(v)}</dd></div>`).join('');
+}
+
+/** Opciones de método para la enfermedad y la granja de la nave elegida en el formulario. */
+function srMetodosHtml(enfId, granjaId, elegido) {
+    const lista = enfId ? metodosDe(enfId, granjaId ? [granjaId] : []) : [];
+    return lista.length
+        ? lista.map(m => `<option value="${esc(m.MetodoID)}"${m.MetodoID === elegido ? ' selected' : ''}>${esc(nombreMetodo(m))}</option>`).join('')
+        : '<option value="">Sin métodos para esta enfermedad</option>';
+}
+
+/** Recalcula el formulario de muestreo: métodos de la enfermedad, prueba, conteo y resumen. */
+function srRender(form, { metodos = false } = {}) {
+    if (!form?.querySelector('[data-sr]')) return;
+    const naveId = form.NaveID?.value || form.dataset.nave;
+    const granjaId = naveById(naveId)?.GranjaID || '';
+    if (metodos && form.MetodoID?.tagName === 'SELECT') form.MetodoID.innerHTML = srMetodosHtml(form.EnfermedadID.value, granjaId, form.MetodoID.value);
+    const metodo = metodoById(form.MetodoID?.value);
+    const sin = form.querySelector('[data-sr-sin-metodo]');
+    if (sin) sin.hidden = !!metodo;
+    const prueba = metodo?.Prueba || '';
+    const def = state.db.pruebasSerologia[prueba];
+    form.querySelector('[data-sr-prueba]').innerHTML = metodo
+        ? `Prueba: <strong>${esc(PRUEBA_NOMBRE[prueba])}</strong> · ${prueba === 'PLACA' ? 'escribe P (positivo) o N (negativo) por ave' : `título en ${esc(def.unidad)}${def.entero ? ', números enteros' : ''} de ${esc(fmtNum(def.min))} a ${esc(fmtNum(def.max))}`}`
+            + (metodo.CortePositivo !== '' && prueba !== 'PLACA' ? ` · Positivo desde ${esc(fmtNum(metodo.CortePositivo))}` : '')
+        : 'Elige un método para saber qué escribir.';
+    const { valores, malos } = prueba ? leerValoresSero(form.Valores.value, prueba) : { valores: [], malos: [] };
+    const total = Math.max(0, Math.floor(toNum(form.Muestra.value) || 0));
+    form.querySelector('[data-sr-count]').textContent = `${nf.format(valores.length)} de ${nf.format(total)}`;
+    form.querySelector('[data-sr-aviso]').innerHTML = malos.length
+        ? alertBox('warn', 'alert-triangle', `No válidos: ${esc(malos.slice(0, 8).join(' '))}${malos.length > 8 ? '…' : ''}`)
+        : valores.length > total ? alertBox('warn', 'alert-triangle', `Hay ${valores.length - total} resultado(s) de más para una muestra de ${total}.`) : '';
+    form.querySelector('[data-sr-resumen]').innerHTML = prueba ? resumenSeroHtml(prueba, valores, metodo) : '';
+}
+
+/**
+ * Nuevo muestreo o edición. Al crear, la casilla "agregar otra enfermedad" reabre el formulario
+ * con la misma nave, fecha y muestra (el laboratorio analiza los mismos sueros para varias).
+ */
+async function openSerologiaModal(s = null, preset = {}) {
+    const linea = s ? s.Linea : state.linea;
+    let ubic;
+    if (s) {
+        ubic = `<label class="field"><span>Sector / nave</span><input value="${esc([s.Sector, s.Nave].join(' / '))}" readonly></label>
+            <label class="field"><span>Fecha del muestreo</span><input value="${esc(fmtDate(s.Fecha))}" readonly></label>
+            <label class="field"><span>Enfermedad</span><input value="${esc(s.Enfermedad)}" readonly></label>
+            <label class="field"><span>Método</span><input value="${esc(s.Metodo)} · ${esc(s.Prueba)}" readonly></label>
+            <input type="hidden" name="MetodoID" value="${esc(s.MetodoID)}">`;
+    } else {
+        ubic = ubicacionInputs(linea, { naveId: preset.naveId, fecha: preset.fecha || today(), sinVentana: true });
+        if (!ubic) return toast(`No hay naves activas de ${linea.toLowerCase()}.`, 'error');
+    }
+    const enfInicial = preset.enfId || state.srEnf || state.db.enfermedades[0]?.EnfermedadID || '';
+    const naveInicial = s ? s.NaveID : (/name="NaveID"[^>]*>[\s\S]*?<option value="([^"]+)" selected/.exec(ubic) || [])[1];
+    const granjaInicial = naveById(naveInicial)?.GranjaID || '';
+    const valores = s ? String(s.Valores || '').split(',').filter(Boolean).join(' ') : '';
+    const body = `<section class="form-section"><div class="form-grid">${ubic}
+        ${s ? '' : `<label class="field"><span>Enfermedad <span class="req">*</span></span><select name="EnfermedadID" required data-change="sr-enf">${state.db.enfermedades.map(e =>
+        `<option value="${esc(e.EnfermedadID)}"${e.EnfermedadID === enfInicial ? ' selected' : ''}>${esc(e.Nombre)}</option>`).join('')}</select></label>
+            <label class="field"><span>Método o kit <span class="req">*</span></span><select name="MetodoID" required data-change="sr-metodo">${srMetodosHtml(enfInicial, granjaInicial, preset.metodoId || state.srMetodo)}</select></label>
+            <div class="span-all" data-sr-sin-metodo hidden><div class="alert alert-info">${ico('info')}<span>Esta enfermedad aún no tiene un método para esta granja.</span><button type="button" class="btn btn-sm" data-action="metodo-desde-form">${ico('plus')}Crear método</button></div></div>`}
+    </div></section>
+    <section class="form-section" data-sr><h3>${ico('syringe')}Resultados por ave</h3>
+        <p class="field-hint center" data-sr-prueba></p>
+        <div class="form-grid">
+            <label class="field"><span>Tamaño de la muestra <span class="req">*</span></span><input type="number" name="Muestra" min="1" max="${state.db.maxMuestra}" step="1" inputmode="numeric" required value="${esc(s?.Muestra || preset.muestra || 20)}" data-input="sr-calc">
+                <small class="field-hint">Número de aves (sueros) analizadas.</small></label>
+            <label class="field span-all"><span>Resultado de cada ave <span class="req">*</span> <span class="muted" data-sr-count></span></span><textarea name="Valores" rows="4" required data-input="sr-calc" placeholder="Por ejemplo: 6 7 5 8 6 …">${esc(valores)}</textarea>
+                <small class="field-hint">Cópialos del reporte del laboratorio, en orden, separados por espacios, comas o saltos de línea.</small></label>
+        </div>
+        <div data-sr-aviso></div>
+        <dl class="kv pz-stats" data-sr-resumen></dl>
+    </section>
+    <section class="form-section"><div class="form-grid">
+        ${linea === 'Incubadora' ? `<label class="field"><span>Lote reproductora de origen</span><input name="LoteOrigen" maxlength="80" value="${esc(s?.LoteOrigen || '')}">
+            <small class="field-hint">Lote de las madres de estos pollitos (opcional).</small></label>` : ''}
+        <label class="field"><span>Laboratorio</span><input name="Laboratorio" maxlength="120" value="${esc(s?.Laboratorio || preset.laboratorio || '')}"></label>
+        <label class="field span-all"><span>Comentarios</span><textarea name="Comentarios" maxlength="1000">${esc(s?.Comentarios || '')}</textarea></label>
+        ${s ? justField('Explica qué se corrige (por ejemplo, un resultado mal digitado).') : `<label class="check span-all"><input type="checkbox" name="otra"${preset.otra ? ' checked' : ''}> Al guardar, agregar otra enfermedad para esta misma nave y fecha</label>`}
+    </div></section>`;
+    let siguiente = null;
+    const promesa = openModal({
+        title: s ? 'Editar muestreo serológico' : `Nuevo muestreo serológico · ${linea.toLowerCase()}`, wide: true, body,
+        submitLabel: s ? 'Guardar cambios' : 'Guardar muestreo',
+        onSubmit: async (fd) => {
+            const metodo = metodoById(fd.get('MetodoID')) || (s && { Prueba: s.Prueba });
+            if (!metodo) throw new Error('Elige el método o kit (o crea uno para esta enfermedad).');
+            const { valores: v, malos } = leerValoresSero(fd.get('Valores'), metodo.Prueba);
+            const muestra = toNum(fd.get('Muestra'));
+            if (malos.length) throw new Error(`Hay resultados no válidos: ${malos.slice(0, 8).join(' ')}.`);
+            if (v.length !== muestra) throw new Error(`La muestra es de ${muestra} y hay ${v.length} resultados. Deben ser exactamente ${muestra}.`);
+            const p = { Muestra: muestra, Valores: v, Laboratorio: fd.get('Laboratorio') || '', Comentarios: fd.get('Comentarios') || '', LoteOrigen: fd.get('LoteOrigen') || '' };
+            if (s) Object.assign(p, { SerologiaID: s.SerologiaID, justificacion: fd.get('justificacion') });
+            else Object.assign(p, { Linea: linea, NaveID: fd.get('NaveID'), Fecha: fd.get('Fecha'), EnfermedadID: fd.get('EnfermedadID'), MetodoID: fd.get('MetodoID') });
+            await save('saveSerologia', p, s ? 'Muestreo actualizado.' : 'Muestreo guardado.', { snapshot: false });
+            if (!s && fd.get('otra')) siguiente = { naveId: p.NaveID, fecha: p.Fecha, muestra, laboratorio: p.Laboratorio, otra: true };
+        },
+    });
+    const form = $('#modal form');
+    if (form && s) form.dataset.nave = s.NaveID;
+    srRender(form);
+    await promesa;
+    if (siguiente) setTimeout(() => openSerologiaModal(null, siguiente), 60);
+}
+
+async function verSerologiaModal(s) {
+    const valores = String(s.Valores || '').split(',').filter(Boolean);
+    const filas = [['Enfermedad', s.Enfermedad], ['Método', `${s.Metodo} · ${s.Prueba}`], ['Edad', s.EdadDias !== '' ? textoEdad(Number(s.EdadDias)) : '—'], ['Muestra', s.Muestra]]
+        .concat(s.Prueba === 'PLACA' ? [] : [[s.Prueba === 'HI' ? 'Promedio (log2)' : 'Media geométrica', fmtNum(valorResumen(s))], ['Dato mayor', fmtNum(s.Maximo)], ['Dato menor', fmtNum(s.Minimo)]])
+        .concat(s.Prueba === 'ELISA' ? [['CV', `${fmtNum(s.CV)} %`]] : [])
+        .concat(s.PctPositivos !== '' ? [['Positivas', `${s.Positivos} (${fmtNum(s.PctPositivos)} %)`]] : [])
+        .concat(s.PctProtegidas !== '' ? [['Protegidas', `${fmtNum(s.PctProtegidas)} %`]] : [])
+        .concat(s.LoteOrigen ? [['Lote de origen', s.LoteOrigen]] : []).concat(s.Laboratorio ? [['Laboratorio', s.Laboratorio]] : []);
+    await openModal({
+        title: `Muestreo del ${fmtDate(s.Fecha)}`, cancelLabel: 'Cerrar', wide: true,
+        body: `<p class="center">${esc([granjaName(s.GranjaID), s.Sector, s.Nave, s.NumeroLote ? 'Lote ' + s.NumeroLote : ''].filter(Boolean).join(' / '))}</p>
+            <dl class="kv">${filas.map(([l, v]) => `<div><dt>${esc(l)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+            <section class="form-section"><h3>${ico('list-checks')}Resultado de cada ave</h3>
+            <ol class="pz-list">${valores.map((v, i) => `<li><span class="pz-num">${i + 1}</span>${esc(v)}</li>`).join('')}</ol></section>`,
+    });
+}
+
+async function deleteSerologiaFlow(s) {
+    await openModal({
+        title: 'Eliminar muestreo serológico', danger: true, submitLabel: 'Eliminar',
+        body: `<p class="center">${esc(s.Enfermedad)} · ${esc(fmtDate(s.Fecha))} · ${esc([s.Sector, s.Nave].join(' / '))} · muestra de ${esc(s.Muestra)}.</p>${justField()}`,
+        onSubmit: async fd => save('deleteSerologia', { SerologiaID: s.SerologiaID, justificacion: fd.get('justificacion') }, 'Muestreo eliminado.', { snapshot: false }),
+    });
+}
+
+/** Método o kit: general (solo admin) o propio de una granja. */
+async function openMetodoModal(m = null, preset = {}) {
+    const granjas = isAdmin() ? state.db.granjas.filter(g => g.Estado === 'Activo') : state.db.granjas.filter(g => g.GranjaID === state.granjaId);
+    const granjaHtml = m
+        ? `<label class="field"><span>De</span><input value="${esc(m.GranjaID ? granjaName(m.GranjaID) : 'General (todas las granjas)')}" readonly></label>`
+        : isAdmin()
+            ? `<label class="field"><span>De <span class="req">*</span></span><select name="GranjaID"><option value="">General (todas las granjas)</option>${granjas.map(g =>
+                `<option value="${esc(g.GranjaID)}"${g.GranjaID === preset.granjaId ? ' selected' : ''}>${esc(g.NombreGranja)}</option>`).join('')}</select>
+                <small class="field-hint">Un método general lo pueden usar todas las granjas.</small></label>`
+            : `<label class="field"><span>De</span><input value="${esc(granjaName(state.granjaId))}" readonly><input type="hidden" name="GranjaID" value="${esc(state.granjaId)}"></label>`;
+    const enfId = m?.EnfermedadID || preset.enfId || state.srEnf || state.db.enfermedades[0]?.EnfermedadID;
+    const pruebasDe = id => String(enfermedadById(id)?.Pruebas || '').split(',').filter(Boolean);
+    const opcionesPrueba = (id, elegida) => pruebasDe(id).map(p => `<option value="${p}"${p === elegida ? ' selected' : ''}>${esc(PRUEBA_NOMBRE[p])}</option>`).join('');
+    const pruebaIni = m?.Prueba || pruebasDe(enfId)[0];
+    await openModal({
+        title: m ? 'Editar método o kit' : 'Nuevo método o kit', wide: true,
+        body: `<div class="form-grid">${granjaHtml}
+            <label class="field"><span>Enfermedad <span class="req">*</span></span><select name="EnfermedadID" required data-change="met-enf">${state.db.enfermedades.map(e =>
+            `<option value="${esc(e.EnfermedadID)}"${e.EnfermedadID === enfId ? ' selected' : ''}>${esc(e.Nombre)}</option>`).join('')}</select></label>
+            <label class="field"><span>Prueba <span class="req">*</span></span><select name="Prueba" required data-change="met-prueba">${opcionesPrueba(enfId, pruebaIni)}</select></label>
+            <label class="field"><span>Nombre del método o kit <span class="req">*</span></span><input name="Nombre" required maxlength="80" value="${esc(m?.Nombre || '')}" placeholder="Por ejemplo: IDEXX IBD"></label>
+            <label class="field"><span>Laboratorio</span><input name="Laboratorio" maxlength="120" value="${esc(m?.Laboratorio || '')}"></label>
+            <label class="field" data-met-corte><span>Positivo desde</span><input type="number" name="CortePositivo" min="0" step="any" inputmode="decimal" value="${esc(m?.CortePositivo || '')}">
+                <small class="field-hint">Título a partir del cual un ave cuenta como positiva.</small></label>
+            <label class="field" data-met-corte><span>Nivel protector</span><input type="number" name="NivelProtector" min="0" step="any" inputmode="decimal" value="${esc(m?.NivelProtector || '')}">
+                <small class="field-hint">Título a partir del cual un ave se considera protegida.</small></label>
+            <label class="field span-all" data-met-corte><span>Fuente del corte o del nivel</span><input name="Fuente" maxlength="300" value="${esc(m?.Fuente || '')}" placeholder="Por ejemplo: inserto del kit, versión y página">
+                <small class="field-hint">Escribe un corte o un nivel solo si está publicado. Si no hay fuente, déjalos vacíos: no se inventan.</small></label>
+            ${m ? justField() : ''}</div>`,
+        submitLabel: m ? 'Guardar cambios' : 'Guardar método',
+        onSubmit: async (fd) => {
+            const p = formPayload(fd);
+            if ((p.CortePositivo || p.NivelProtector) && !p.Fuente) throw new Error('Indica la fuente del corte o del nivel protector.');
+            if (m) Object.assign(p, { MetodoID: m.MetodoID });
+            await save('saveMetodoSerologia', p, m ? 'Método actualizado.' : 'Método guardado.');
+        },
+    });
+}
+
+async function deleteMetodoFlow(m) {
+    await openModal({
+        title: 'Eliminar método o kit', danger: true, submitLabel: 'Eliminar',
+        body: `<p class="center">${esc(nombreMetodo(m))} · ${esc(enfermedadById(m.EnfermedadID)?.Nombre || '')}.</p>
+            <p class="muted center">Solo se puede eliminar si no tiene muestreos.</p>${justField()}`,
+        onSubmit: async fd => save('deleteMetodoSerologia', { MetodoID: m.MetodoID, justificacion: fd.get('justificacion') }, 'Método eliminado.'),
+    });
+}
+
 // ---------- Pesos estándar ----------
 async function openEstandarModal(x = null) {
     const gen = x?.LineaGenetica || state.estGen, tipo = x?.Tipo || state.estTipo;
@@ -2554,6 +2938,20 @@ const ACTIONS = {
     'delete-lista': el => deleteListaFlow(state.db.listas.find(l => l.ListaID === el.dataset.id)),
 
     // Concentrado y pesos estándar
+    // Serología
+    'new-serologia': () => openSerologiaModal(),
+    'edit-serologia': el => openSerologiaModal(state.serologias.get(el.dataset.id)),
+    'ver-serologia': el => verSerologiaModal(state.serologias.get(el.dataset.id)),
+    'delete-serologia': el => deleteSerologiaFlow(state.serologias.get(el.dataset.id)),
+    'new-metodo': () => openMetodoModal(null, { enfId: state.srEnf }),
+    'edit-metodo': el => openMetodoModal(metodoById(el.dataset.id)),
+    'delete-metodo': el => deleteMetodoFlow(metodoById(el.dataset.id)),
+    'metodo-desde-form': (el) => {
+        const f = el.closest('form');
+        const preset = { enfId: f?.EnfermedadID?.value, granjaId: naveById(f?.NaveID?.value)?.GranjaID };
+        closeModal();
+        setTimeout(() => openMetodoModal(null, preset), 60);
+    },
     'new-compra': () => openCompraModal(),
     'edit-compra': el => openCompraModal(state.compras.get(el.dataset.id)),
     'delete-compra': el => deleteCompraFlow(state.compras.get(el.dataset.id)),
@@ -2579,6 +2977,7 @@ function focusGranja(id) {
 }
 
 const INPUTS = {
+    'sr-calc': el => srRender(el.form),
     'compra-calc': (el) => {
         const box = el.form.querySelector('[data-compra-calc]');
         if (box) box.innerHTML = costoQuintalHtml(el.form.CantidadQuintales.value, el.form.CostoTotal.value);
@@ -2605,6 +3004,7 @@ const CHANGES = {
         if (box) box.innerHTML = infoUbicacion(f.NaveID.value, fecha || today());
         syncEdadRegistro(f, loteEn(f.NaveID.value, fecha || today()), fecha || today());
         if (pz) pz.esperado = esperadoPesaje(f.NaveID.value, fecha || today());
+        srRender(f, { metodos: true });
         if (pz && !pz.editando) {
             pz.naveId = f.NaveID.value; pz.fecha = fecha;
             const b = leerBorrador(pz.naveId, pz.fecha);
@@ -2651,6 +3051,19 @@ const CHANGES = {
     'f-eliminados': el => setFiltro({ eliminados: el.checked }),
     'bit-granja': (el) => { state.bitGranja = el.value; render(); },
     'est-gen': (el) => { state.estGen = el.value; render(); },
+    'sr-f-enf': (el) => { state.srEnf = el.value; state.srMetodo = ''; render(); },
+    'sr-f-metodo': (el) => { state.srMetodo = el.value; render(); },
+    'sr-enf': el => srRender(el.form, { metodos: true }),
+    'sr-metodo': el => srRender(el.form),
+    'met-enf': (el) => {
+        const pruebas = String(enfermedadById(el.value)?.Pruebas || '').split(',').filter(Boolean);
+        el.form.Prueba.innerHTML = pruebas.map(p => `<option value="${p}">${esc(PRUEBA_NOMBRE[p])}</option>`).join('');
+        CHANGES['met-prueba'](el.form.Prueba);
+    },
+    'met-prueba': (el) => {
+        // La aglutinación en placa da positivo o negativo: no lleva corte ni nivel.
+        el.form.querySelectorAll('[data-met-corte]').forEach((x) => { x.hidden = el.value === 'PLACA'; });
+    },
     'user-rol': (el) => {
         const fs = el.form?.querySelector('[data-granjas]');
         if (fs) fs.hidden = el.value === ROLES.ADMIN;

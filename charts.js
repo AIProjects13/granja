@@ -257,7 +257,8 @@ function draw(ctx, w, h, spec, { hover = null, exporting = false } = {}) {
         ctx.beginPath();
         let open = false;
         s.data.forEach((v, i) => {
-            if (v === null || v === undefined) { open = false; return; }
+            // spec.unir: une los puntos por encima de los huecos (muestreos en edades distintas).
+            if (v === null || v === undefined) { if (!spec.unir) open = false; return; }
             if (!open) { ctx.moveTo(xc(i), y(v)); open = true; } else ctx.lineTo(xc(i), y(v));
         });
         ctx.stroke();
