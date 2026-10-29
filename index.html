@@ -4,8 +4,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="description" content="Registro avícola: producción de granjas de postura y engorde.">
-    <meta name="theme-color" content="#2E5E2E">
+    <meta name="description" content="CHIIK · Registro avícola: producción de granjas de postura, engorde, reproductoras e incubadora.">
+    <meta name="theme-color" content="#0B2545">
+    <link rel="icon" href="img/chiik-icono.svg" type="image/svg+xml">
     <!-- Política de seguridad: solo se ejecuta código propio y de Firebase, y solo se conecta
          al inicio de sesión y al servidor de la plataforma. Bloquea scripts inyectados y fugas de datos. -->
     <meta http-equiv="Content-Security-Policy" content="
@@ -20,10 +21,10 @@
         base-uri 'self';
         form-action 'self'">
     <meta name="referrer" content="no-referrer">
-    <title>Granjas · Registro avícola</title>
+    <title>CHIIK · Registro avícola</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=Inter:wght@400;500;600;700&family=Sora:wght@600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
     <script src="boot-check.js" defer></script>
     <script type="module" src="app.js"></script>
@@ -37,8 +38,8 @@
     <!-- ===================== Pantalla: cargando ===================== -->
     <div id="screen-loading" class="screen screen-center" role="status" aria-live="polite">
         <div class="brand brand-lg">
-            <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7h.01"/><path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/><path d="m20 7 2 .5-2 .5"/><path d="M10 18v3"/><path d="M14 17.75V21"/><path d="M7 18a6 6 0 0 0 3.84-10.61"/></svg></span>
-            <span class="brand-name">Granjas<small>Registro avícola</small></span>
+            <img class="brand-logo" src="img/chiik-logo-claro.svg" alt="CHIIK" width="398" height="132">
+            <span class="brand-tag">Registro avícola</span>
         </div>
         <div class="spinner" aria-hidden="true"></div>
         <p id="loading-text" class="muted">Cargando…</p>
@@ -48,8 +49,8 @@
     <main id="screen-login" class="screen auth-screen" hidden>
         <section class="auth-card" aria-labelledby="login-title">
             <div class="brand brand-lg">
-                <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7h.01"/><path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/><path d="m20 7 2 .5-2 .5"/><path d="M10 18v3"/><path d="M14 17.75V21"/><path d="M7 18a6 6 0 0 0 3.84-10.61"/></svg></span>
-                <span class="brand-name">Granjas<small>Registro avícola</small></span>
+                <img class="brand-logo" src="img/chiik-logo-claro.svg" alt="CHIIK" width="398" height="132">
+                <span class="brand-tag">Registro avícola</span>
             </div>
             <h1 id="login-title">Inicia sesión</h1>
             <p class="muted">Usa el correo y la contraseña que te entregó la administración.</p>
@@ -123,8 +124,8 @@
     <div id="screen-app" class="app-shell" hidden>
         <aside id="sidebar" class="sidebar" aria-label="Menú principal">
             <div class="brand">
-                <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 7h.01"/><path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/><path d="m20 7 2 .5-2 .5"/><path d="M10 18v3"/><path d="M14 17.75V21"/><path d="M7 18a6 6 0 0 0 3.84-10.61"/></svg></span>
-                <span class="brand-name">Granjas<small>Registro avícola</small></span>
+                <img class="brand-logo" src="img/chiik-logo-claro.svg" alt="CHIIK" width="398" height="132">
+                <span class="brand-tag">Registro avícola</span>
             </div>
             <nav id="nav" class="nav"></nav>
             <div class="sidebar-foot">

@@ -1,43 +1,48 @@
 /* ==========================================================================
-   Granjas · Estilos — tablero plano tipo Power BI, paleta verde
-   Verde principal #2E7D32 · Verde medio #43A047 · Verde claro #A5D6A7
-   Franja oscura #2E5E2E · Fondo #F1F6F0 · Tarjetas blancas con borde fino
+   CHIIK · Estilos — tablero plano, marca CHIIK (manual de marca v0.1)
+   Azul noche #0B2545 · Verde profundo #0A6F78 · Verde dato #00A388 · Niebla #F3F5F9
+   Franja oscura #0B2545 · Fondo #F3F5F9 · Tarjetas blancas con borde fino
    Regla de espaciado: los contenedores separan a sus hijos con `gap`
    (nunca márgenes sumados), así no aparecen espacios dobles.
    ========================================================================== */
 
 :root {
-    --primary: #2E7D32;
-    --primary-2: #1B5E20;
-    --secondary: #43A047;
-    --tertiary: #A5D6A7;
-    --tertiary-ink: #1B5E20;
-    --band: #2E5E2E;           /* franja oscura: barra superior y filtros */
-    --band-2: #3B7340;
-    --nav-bg: #E6F1E4;         /* menú lateral */
-    --bg: #F1F6F0;
+    /* Marca CHIIK: azul noche manda; verdes para los datos; rojo y maíz solo como puntos de color. */
+    --primary: #0A6F78;        /* verde profundo: enlaces, activo, acentos de texto (5.9:1 sobre blanco) */
+    --primary-2: #0B2545;      /* azul noche: títulos y texto fuerte */
+    --secondary: #00A388;      /* verde dato: íconos, barras y titulares grandes (no párrafos) */
+    --tertiary: #7DD3C3;
+    --tertiary-ink: #0A6F78;
+    --band: #0B2545;           /* franja oscura: barra superior */
+    --band-2: #13315C;         /* azul medio: filtros (tarjetas sobre azul) */
+    --nav-bg: #E8ECF2;         /* menú lateral */
+    --bg: #F3F5F9;             /* niebla */
     --surface: #FFFFFF;
-    --surface-2: #F7FBF6;
-    --text: #1F2D1F;
-    --muted: #4E6151;          /* ≥ 5.5:1 sobre todos los fondos claros */
-    --line: #D3E4D0;
+    --surface-2: #F8FAFC;
+    --text: #0B2545;
+    --muted: #5B6B80;          /* pizarra: texto secundario */
+    --line: #D5DCE6;
 
-    --ok: #1B5E20;
-    --ok-bg: rgba(102, 187, 106, 0.22);
-    --warn: #8A5300;
-    --warn-bg: rgba(242, 174, 60, 0.24);
-    --danger: #B42339;
-    --danger-bg: rgba(229, 72, 98, 0.12);
-    --info-bg: rgba(67, 160, 71, 0.12);
+    --ok: #0A6F78;
+    --ok-bg: rgba(0, 163, 136, 0.14);
+    --warn: #8A6500;           /* maíz texto */
+    --warn-bg: rgba(224, 161, 0, 0.18);
+    --danger: #B23A35;         /* rojo texto */
+    --danger-bg: rgba(215, 68, 62, 0.12);
+    --info-bg: rgba(0, 163, 136, 0.10);
 
     /* Estilo plano: bordes finos y sombras muy suaves (los nombres se conservan) */
-    --raised: 0 1px 2px rgba(20, 50, 20, 0.06), 0 0 0 1px var(--line);
+    --raised: 0 1px 2px rgba(11, 37, 69, 0.06), 0 0 0 1px var(--line);
     --raised-sm: 0 0 0 1px var(--line);
     --inset: inset 0 0 0 1px var(--line);
-    --inset-sm: inset 0 0 0 1px #C3D8BF;
-    --grad-primary: linear-gradient(135deg, #2E7D32 0%, #1B5E20 100%);   /* texto blanco ≥ 5.1:1 */
-    --grad-secondary: linear-gradient(135deg, #43A047 0%, #388E3C 100%);   /* solo íconos y barras (≥ 3:1); el texto va sobre --grad-primary */
-    --grad-tertiary: linear-gradient(135deg, #C8E6C9 0%, #A5D6A7 100%);
+    --inset-sm: inset 0 0 0 1px #C5CEDB;
+    --grad-primary: linear-gradient(135deg, #13315C 0%, #0B2545 100%);   /* texto blanco ≥ 12:1 */
+    --grad-secondary: linear-gradient(135deg, #00A388 0%, #0A6F78 100%);   /* solo íconos y barras (≥ 3:1) */
+    --grad-tertiary: linear-gradient(135deg, #BDEAE1 0%, #7DD3C3 100%);
+
+    --font-title: Sora, Inter, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    --font-text: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", Arial, sans-serif;
+    --font-data: "IBM Plex Mono", ui-monospace, "Roboto Mono", "SF Mono", Menlo, Consolas, monospace;
 
     --r-lg: 8px;
     --r-md: 8px;
@@ -65,13 +70,13 @@ body {
     min-height: 100dvh;
     background: var(--bg);
     color: var(--text);
-    font: 400 15px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font: 400 15px/1.5 var(--font-text);
     -webkit-font-smoothing: antialiased;
 }
 h1, h2, h3, h4, p, ul, ol, dl, dd, figure { margin: 0; }
-h1 { font-size: 1.6rem; font-weight: 900; letter-spacing: -0.02em; }
-h2 { font-size: 1.15rem; font-weight: 800; letter-spacing: -0.01em; }
-h3 { font-size: 1rem; font-weight: 800; }
+h1 { font: 700 1.6rem/1.2 var(--font-title); letter-spacing: -0.01em; }
+h2 { font: 600 1.15rem/1.3 var(--font-title); }
+h3 { font-size: 1rem; font-weight: 600; }
 [hidden] { display: none !important; }
 a { color: var(--primary); }
 button, input, select, textarea { font: inherit; color: inherit; }
@@ -99,6 +104,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .brand-lg .brand-mark { width: 56px; height: 56px; border-radius: 18px; }
 .brand-lg .brand-mark svg { width: 30px; height: 30px; }
 .brand-lg .brand-name { font-size: 1.5rem; }
+/* Logo CHIIK (archivo original): sin texto pegado; el subtítulo va debajo, a 1 X de distancia. */
+.brand:has(.brand-logo) { flex-direction: column; gap: var(--s2); }
+.brand-logo { display: block; width: 150px; height: auto; }
+.brand-lg .brand-logo { width: 210px; }
+.brand-tag { font-size: 0.78rem; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
 
 /* ---------- Pantallas de acceso ---------- */
 .screen { min-height: 100vh; min-height: 100dvh; }
@@ -516,17 +526,17 @@ details.ficha[open] > summary .icon:last-child { transform: rotate(180deg); }
 .topbar .icon-btn { background: transparent; color: #fff; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45); }
 .topbar .icon-btn:hover { background: rgba(255, 255, 255, 0.12); }
 
-/* Menú lateral verde claro; la opción activa, en verde sólido */
+/* Menú lateral claro; la opción activa, en azul noche (el verde solo marca el ícono activo) */
 .sidebar { background: var(--nav-bg); box-shadow: 1px 0 0 var(--line); }
 .nav a { color: var(--primary-2); border-radius: var(--r-sm); }
-.nav a:hover { background: #D5E8D1; box-shadow: none; color: var(--primary-2); }
-.nav a.is-active { background: var(--primary); color: #fff; box-shadow: none; }
-.nav a.is-active .icon { color: #fff; }
+.nav a:hover { background: #DCE3EC; box-shadow: none; color: var(--primary-2); }
+.nav a.is-active { background: var(--primary-2); color: #fff; box-shadow: none; }
+.nav a.is-active .icon { color: #7DD3C3; }
 .user-chip { background: #fff; }
 
 /* Filtros sobre franja verde, como la barra de segmentadores de Power BI */
 .filters-card { background: var(--band-2); border: 0; box-shadow: none; color: #fff; }
-.filters-card .field > span:first-child, .filters-card .field-label, .filters-card .check { color: #E8F5E9; }
+.filters-card .field > span:first-child, .filters-card .field-label, .filters-card .check { color: #E3E8F0; }
 .filters-card .field input, .filters-card .field select, .filters-card .dropdown > summary {
     background: #fff; color: var(--text); box-shadow: none; border: 0;
 }
@@ -540,12 +550,14 @@ details.ficha[open] > summary .icon:last-child { transform: rotate(180deg); }
 /* El panel del selector de granjas es blanco: su texto vuelve al color normal. */
 .filters-card .dropdown-panel .check { color: var(--text); }
 .filters-card .badge { background: #fff; color: var(--primary-2); }
-.filters-card .check input { accent-color: #A5D6A7; }
+.filters-card .check input { accent-color: #7DD3C3; }
 
 /* Tarjetas de indicadores: número grande en verde, etiqueta debajo */
 .kpi { border-top: 4px solid var(--primary); }
 .kpi-icon { width: auto; height: auto; background: none !important; color: var(--secondary) !important; }
-.kpi-value { order: 2; color: var(--primary-2); font-size: 1.8rem; }
+.kpi-value { order: 2; color: var(--primary-2); font: 600 clamp(1.1rem, 1.55vw, 1.5rem)/1.2 var(--font-data); letter-spacing: -0.03em; white-space: nowrap; }
+.table td { font-variant-numeric: tabular-nums; }
+.page-title { font-family: var(--font-title); font-weight: 600; }
 .kpi-label { order: 3; color: var(--primary); }
 .kpi-sub { order: 4; }
 .kpi-icon { order: 1; }
@@ -560,18 +572,18 @@ details.ficha[open] > summary .icon:last-child { transform: rotate(180deg); }
 .brand-mark { box-shadow: none; }
 
 /* Tablas: encabezado verde claro */
-.table thead th { background: #E6F1E4; color: var(--primary-2); }
+.table thead th { background: #E8ECF2; color: var(--primary-2); }
 .table .sticky-col, .table td.actions, .table th.actions { background: #FFFFFF; }
-.table thead .sticky-col, .table thead th.actions { background: #E6F1E4; }
-.table tbody tr:hover td { background: #F1F8EF; }
+.table thead .sticky-col, .table thead th.actions { background: #E8ECF2; }
+.table tbody tr:hover td { background: #F1F4F8; }
 .table-wrap { box-shadow: 0 0 0 1px var(--line); }
 
 /* Estructura y fichas */
 .nave { background: var(--surface-2); }
 .pz-bar { background: var(--secondary); }
 .pz-bar.is-full { background: var(--primary-2); }
-.spinner { box-shadow: inset 0 0 0 4px #DCEBD9; border-top-color: var(--primary); }
-.auth-card { box-shadow: 0 1px 3px rgba(20, 50, 20, 0.08), 0 0 0 1px var(--line); }
+.spinner { box-shadow: inset 0 0 0 4px #E3E8F0; border-top-color: var(--primary); }
+.auth-card { box-shadow: 0 1px 3px rgba(11, 37, 69, 0.08), 0 0 0 1px var(--line); }
 .panorama .chart-box canvas { height: 260px; }
 
 @media (max-width: 959px) {

@@ -696,7 +696,7 @@ function render() {
     Object.keys(tables).forEach(k => delete tables[k]);
     Object.keys(charts).forEach(k => delete charts[k]);
     $('#page-title').textContent = view === 'granja' && !isAdmin() ? 'Mi granja' : v.title;
-    document.title = `${$('#page-title').textContent} · Granjas`;
+    document.title = `${$('#page-title').textContent} · CHIIK`;
     $$('#nav a').forEach(a => a.classList.toggle('is-active', a.dataset.view === view || (view === 'granja' && a.dataset.view === 'granjas')));
     $('#view').innerHTML = v.render(param);
     mountCharts();
@@ -916,7 +916,7 @@ function viewDashboard() {
         // Banda mín–máx de la tabla de la línea genética (solo si hay datos).
         if (def.banda) {
             const lo = grupos.map(g => gShow(g, CAMPOS_BANDA[0])), hi = grupos.map(g => gShow(g, CAMPOS_BANDA[1]));
-            if (lo.some(v => v !== null)) spec.band = { name: 'Rango de la tabla', lo, hi, color: PALETTE.tabla };
+            if (lo.some(v => v !== null)) spec.band = { name: 'Rango de la tabla', lo, hi, color: PALETTE.rango };
         }
         return chartCard(`${linea}-${def.id}`, spec);
     }).join('') + '</div>';
@@ -1636,7 +1636,7 @@ function seroCharts(filas, metodo) {
         referencias.push({ name: `Positivo desde ${fmtNum(metodo.CortePositivo)}`, color: PALETTE.tabla, dashed: true, data: dias.map(() => Number(metodo.CortePositivo)) });
     }
     if (metodo.Prueba !== 'PLACA' && metodo.NivelProtector !== '') {
-        referencias.push({ name: `Nivel protector ${fmtNum(metodo.NivelProtector)}`, color: PALETTE.o4, dashed: true, data: dias.map(() => Number(metodo.NivelProtector)) });
+        referencias.push({ name: `Nivel protector ${fmtNum(metodo.NivelProtector)}`, color: PALETTE.cat[5], dashed: true, data: dias.map(() => Number(metodo.NivelProtector)) });
     }
     const enf = enfermedadById(metodo.EnfermedadID)?.Nombre || '';
     const labels = dias.map(d => `Día ${d}`);
@@ -3273,7 +3273,7 @@ function limpiarSesion() {
     Object.keys(charts).forEach(k => delete charts[k]);
     ['#view', '#nav', '#user-chip', '#page-title'].forEach(s => $(s).replaceChildren());
     sesionN++;   // una consulta que llegue tarde ya no entra a la caché de la sesión siguiente
-    document.title = 'Granjas · Registro avícola';
+    document.title = 'CHIIK · Registro avícola';
 }
 
 // Cierre de sesión automático por inactividad (equipos compartidos).

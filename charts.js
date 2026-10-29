@@ -12,16 +12,19 @@
    ========================================================================== */
 
 export const PALETTE = {
-    primary: '#2E7D32',       // verde principal (dato real)
-    tabla: '#8A9A8C',         // referencia (tabla/ideal): gris neutro, siempre punteado
-    // Escala ordinal (claro → oscuro) para categorías con orden (tamaños de huevo, etapas).
-    o1: '#66BB6A', o2: '#43A047', o3: '#2E7D32', o4: '#1B5E20',
-    // Categorías sin orden (naves, granjas), en orden fijo: verde, azul, ámbar, violeta, oliva, frambuesa.
-    cat: ['#2E7D32', '#1E88A8', '#D08A00', '#8E5BB5', '#5C8A00', '#C2185B'],
-    track: '#E4EFE2',         // fondo de barras y medidores
-    grid: 'rgba(46, 125, 50, 0.10)',
-    axis: '#4E6151',
-    text: '#1F2D1F',
+    // Marca CHIIK (manual de marca, 07 · Visualización de datos): planas, en bloques y honestas.
+    primary: '#0B2545',       // el dato real va en azul noche
+    tabla: '#0A6F78',         // referencia (tabla/estándar de la guía): verde profundo, siempre punteado
+    rango: '#3DBCA5',         // rango de la guía: banda verde clara
+    // Escala ordinal (claro → oscuro) para categorías con orden (tamaños de huevo, etapas): el degradado verde del logo.
+    o1: '#3DBCA5', o2: '#00A388', o3: '#0A6F78', o4: '#0B2545',
+    // Series sin orden (naves, granjas), en el orden del manual: azul noche, verde dato, maíz, verde profundo;
+    // si hay más de 4 (el manual pide máximo 4), siguen pizarra y maíz oscuro.
+    cat: ['#0B2545', '#00A388', '#E0A100', '#0A6F78', '#5B6B80', '#8A6500'],
+    track: '#E3E8F0',         // fondo de barras y medidores
+    grid: '#E3E8F0',          // rejilla muy suave, solo horizontal
+    axis: '#0B2545',
+    text: '#0B2545',
 };
 
 const FONT = 'Inter, system-ui, -apple-system, "Segoe UI", sans-serif';
@@ -266,7 +269,8 @@ function draw(ctx, w, h, spec, { hover = null, exporting = false } = {}) {
         if (n <= 60) {
             s.data.forEach((v, i) => {
                 if (v === null || v === undefined) return;
-                ctx.beginPath(); ctx.arc(xc(i), y(v), hover === i ? 5 : 3, 0, Math.PI * 2);
+                const lado = hover === i ? 9 : 6;   // puntos cuadrados, como los bloques del logo
+                ctx.beginPath(); ctx.rect(xc(i) - lado / 2, y(v) - lado / 2, lado, lado);
                 ctx.fillStyle = s.dashed ? '#FFFFFF' : s.color; ctx.fill();
                 ctx.lineWidth = 2; ctx.strokeStyle = s.color; ctx.stroke();
             });
